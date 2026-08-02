@@ -1,0 +1,2 @@
+apps/web/public/media/*.webm filter=lfs diff=lfs merge=lfs -text
+apps/web/public/media/*.webp filter=lfs diff=lfs merge=lfs -text
