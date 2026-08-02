@@ -1,0 +1,27 @@
+{
+  "name": "eidos-kiosk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Eidos robot preset selection kiosk",
+  "workspaces": [
+    "apps/web",
+    "apps/server",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "npm run mediapipe:copy && concurrently -k -n server,web -c blue,green \"npm run dev --workspace @eidos/server\" \"npm run dev --workspace @eidos/web\"",
+    "build": "npm run build --workspace @eidos/shared && npm run mediapipe:copy && npm run build --workspace @eidos/web && npm run build --workspace @eidos/server",
+    "start": "npm run start --workspace @eidos/server",
+    "kiosk": "npm run build && npm run start --workspace @eidos/server",
+    "typecheck": "npm run typecheck --workspace @eidos/shared && npm run typecheck --workspace @eidos/web && npm run typecheck --workspace @eidos/server",
+    "test:unit": "npm run test:unit --workspace @eidos/server",
+    "media:validate": "node scripts/validate-media.mjs",
+    "media:convert": "node scripts/convert-media.mjs",
+    "mediapipe:copy": "node scripts/copy-mediapipe.mjs",
+    "verify:mock": "npm run build && EIDOS_MOCK=true npm run start --workspace @eidos/server",
+    "prepare": "node scripts/check-node.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
