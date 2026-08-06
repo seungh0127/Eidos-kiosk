@@ -2,9 +2,9 @@ import "dotenv/config";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { AnalyzeRequest } from "@eidos/shared";
+import type { AnalyzeRequest, RobotCardOffsets } from "@eidos/shared";
 import { config, assertValidConfig } from "./config.js";
 import { EidosDatabase } from "./db.js";
 import { AnalysisService, mockAnalyze } from "./analysis.js";
@@ -16,6 +16,39 @@ const devMedia = path.join(projectRoot, "apps/web/public/media");
 const dataDir = path.join(projectRoot, "data");
 const database = new EidosDatabase(path.join(dataDir, "eidos.sqlite"));
 const REALTIME_UPSTREAM_TIMEOUT_MS = 25_000;
+const robotCardOffsetsPath = path.join(dataDir, "robot-card-offsets.json");
+
+function readRobotCardOffsets(): RobotCardOffsets {
+  try {
+    if (!existsSync(robotCardOffsetsPath)) return {};
+    return JSON.parse(readFileSync(robotCardOffsetsPath, "utf-8")) as RobotCardOffsets;
+  } catch {
+    return {};
+  }
+}
+
+// Clamped to a sane range so a malformed request can't push the overlay
+// wildly off the card in production.
+function sanitizeRobotCardOffsets(input: unknown): RobotCardOffsets {
+  const clean: RobotCardOffsets = {};
+  if (!input || typeof input !== "object") return clean;
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    const id = Number(key);
+    if (!Number.isInteger(id) || id < 1 || id > 18) continue;
+    if (!value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    const scale = Number(v.scale);
+    const top = Number(v.top);
+    const left = Number(v.left);
+    if (![scale, top, left].every(Number.isFinite)) continue;
+    clean[id] = {
+      scale: Math.min(2, Math.max(0.3, scale)),
+      top: Math.min(100, Math.max(-50, top)),
+      left: Math.min(150, Math.max(-50, left)),
+    };
+  }
+  return clean;
+}
 
 let analysisService: AnalysisService | undefined;
 if (!config.mockMode && config.openAiApiKey) {
@@ -54,7 +87,7 @@ app.post("/api/realtime/session", async (req, res) => {
         transcription: {
           model: config.transcriptionModel,
           languages: ["ko", "en"],
-          keywords: ["Hi Eidos", "Eidos"],
+          keywords: ["Eidos", "에이도스"],
           delay: "low",
         },
         turn_detection: null,
@@ -167,6 +200,19 @@ app.post("/api/analyze", async (req, res) => {
   }
 });
 
+app.get("/api/robot-card-offsets", (_req, res) => {
+  res.json({ offsets: readRobotCardOffsets() });
+});
+
+app.post("/api/robot-card-offsets", (req, res) => {
+  const body = req.body as { offsets?: unknown };
+  const clean = sanitizeRobotCardOffsets(body.offsets);
+  if (Object.keys(clean).length === 0) return res.status(400).json({ ok: false, error: "No valid robot offsets in request." });
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(robotCardOffsetsPath, JSON.stringify(clean, null, 2), "utf-8");
+  res.json({ ok: true, offsets: clean });
+});
+
 app.get("/api/runtime", (_req, res) => {
   const ids = availableRobotIds();
   res.json({
@@ -200,15 +246,16 @@ app.post("/api/operator/counter/reset", (req, res) => {
 app.get("/api/operator/sessions", (req, res) => res.json(database.listSessions(Number(req.query.limit ?? 50))));
 app.use("/media", express.static(mediaDirectory(), { maxAge: "1h" }));
 
-if (existsSync(webDist)) {
-  app.use(express.static(webDist));
-  app.use((req, res, next) => {
-    if (req.method === "GET" && !req.path.startsWith("/api/") && !req.path.startsWith("/media/")) {
-      return res.sendFile(path.join(webDist, "index.html"));
-    }
-    next();
-  });
-}
+// Register the web routes even when the dist directory is not present yet.
+// This keeps a long-running dev server from permanently becoming API-only
+// after a later build creates apps/web/dist.
+app.use(express.static(webDist));
+app.use((req, res, next) => {
+  if (req.method === "GET" && !req.path.startsWith("/api/") && !req.path.startsWith("/media/")) {
+    return res.sendFile(path.join(webDist, "index.html"));
+  }
+  next();
+});
 
 assertValidConfig();
 app.listen(config.port, config.host, () => {

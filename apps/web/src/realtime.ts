@@ -27,6 +27,15 @@ const LOCAL_SILENCE_MS = 1000;
 const LOCAL_MIN_SPEECH_MS = 260;
 const LOCAL_NOISE_CALIBRATION_MS = 700;
 const LOCAL_NOISE_MARGIN = 0.035;
+// Safety net: the noise floor is calibrated once, briefly, right when the
+// connection opens. If real exhibition-hall ambient noise later runs higher
+// than that snapshot, the level can stay above the speech threshold through
+// what the visitor experiences as silence, so LOCAL_SILENCE_MS's turn-end
+// detection never fires and the request never finalizes — this was likely
+// the "finished talking but nothing happens" bug. Forcing a commit once a
+// turn has been open this long guarantees it can never hang indefinitely,
+// independent of whatever the noise floor actually is.
+const LOCAL_MAX_SPEECH_MS = 6000;
 const REALTIME_READY_TIMEOUT_MS = 15_000;
 
 async function formatSessionError(response: Response): Promise<string> {
@@ -226,10 +235,24 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
               speechStartedAt = speechCandidateSince;
               callbacks.onStatus?.("connected", "Local VAD: speech detected");
             }
-            if (speechActive) lastVoiceAt = timestamp;
+            // Same LOCAL_START_MS debounce applies to *resuming* voice, not
+            // just starting it — otherwise a single stray noisy sample
+            // (100ms) during the silence countdown below resets it back to
+            // zero, and real ambient noise can keep doing that indefinitely,
+            // so the turn never ends on its own. Only a sustained re-entry
+            // counts as "still talking".
+            if (speechActive && timestamp - speechCandidateSince >= LOCAL_START_MS) lastVoiceAt = timestamp;
           } else {
             speechCandidateSince = 0;
             if (speechActive && timestamp - lastVoiceAt >= LOCAL_SILENCE_MS) commitTurn(timestamp);
+          }
+          // Silence-based end-of-turn detection depends on ambient noise
+          // staying close to the one-time calibration snapshot. If it
+          // doesn't, this forces the turn closed anyway instead of holding
+          // the buffer open indefinitely.
+          if (speechActive && speechStartedAt && timestamp - speechStartedAt >= LOCAL_MAX_SPEECH_MS) {
+            callbacks.onStatus?.("connected", "Local VAD: max speech length reached, forcing turn end");
+            commitTurn(timestamp);
           }
         } else {
           speechActive = false;

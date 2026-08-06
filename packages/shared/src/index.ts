@@ -60,3 +60,12 @@ export type AnalyzeRequest = {
   transcript: string;
   startedAt?: string;
 };
+
+// Per-robot correction for the photo-capture card's .result-card-back-robot
+// overlay (see apps/web/src/styles.css) — the 18 source videos each frame
+// their robot at a different scale/position within their own frame, so a
+// single shared box doesn't render every robot at the same apparent size.
+// Tuned live from the ?gallery Photo-card view and persisted server-side so
+// the change applies everywhere without a rebuild.
+export type RobotCardOffset = { scale: number; top: number; left: number };
+export type RobotCardOffsets = Record<number, RobotCardOffset>;

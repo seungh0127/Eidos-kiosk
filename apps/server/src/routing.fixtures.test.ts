@@ -64,9 +64,15 @@ const semanticFixtures: Array<[string, number]> = [
   ["공원에서 따라와줘", 9], ["피크닉에 함께 가줘", 9], ["야외에서 동행해줘", 9], ["등산 입구까지 짐을 가져와줘", 9],
 ];
 
+const homeWatchFixtures: Array<[string, number]> = [
+  ["이틀 뒤에 여행가는데, 우리 집을 지켜줘", 2],
+  ["여행 가는 동안 집 지켜줘", 2],
+  ["며칠 집을 봐줘", 2],
+];
+
 describe("document routing fixtures", () => {
   it("covers at least 90 document-derived cases", () => {
-    const fixtures = [...hiddenFixtures, ...environmentFixtures, ...semanticFixtures];
+    const fixtures = [...hiddenFixtures, ...environmentFixtures, ...semanticFixtures, ...homeWatchFixtures];
     expect(fixtures.length).toBeGreaterThanOrEqual(90);
     for (const [transcript, robotId] of fixtures) {
       expect(mockAnalyze(transcript, `fixture-${robotId}`).robotId, transcript).toBe(robotId);

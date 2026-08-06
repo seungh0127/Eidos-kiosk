@@ -1,4 +1,12 @@
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+// Resolve the repo-root .env explicitly: npm workspaces run this script with
+// cwd set to apps/server, so the default dotenv/config (cwd-relative) lookup
+// silently misses the root .env and OPENAI_API_KEY appears unset.
+const here = path.dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: path.resolve(here, "../../../.env") });
 
 export const config = {
   host: process.env.HOST ?? "127.0.0.1",

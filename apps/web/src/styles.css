@@ -1,5 +1,74 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
+@import url("https://fonts.googleapis.com/css2?family=Bitcount+Single:wght@300&display=swap");
+
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueThin.otf") format("opentype");
+  font-weight: 100;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueUltraLight.otf") format("opentype");
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueLight.otf") format("opentype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueRoman.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueMedium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueBold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueHeavy.otf") format("opentype");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica Neue Local";
+  src: url("/fonts/helvetica-neue/HelveticaNeueBlack.otf") format("opentype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Signus Digital Round";
+  src: url("/fonts/SignusDigitalRoundNbp-A61D.ttf") format("truetype");
+  font-display: swap;
+}
+
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Helvetica Neue Local", "Helvetica Neue", sans-serif;
+  --font-korean: "Pretendard", sans-serif;
+  --font-digital: "Signus Digital Round", monospace;
+  font-family: var(--font-display), var(--font-korean), ui-sans-serif, system-ui, sans-serif;
   color: #0a0a0a;
   background: #fff;
   font-synthesis: none;
@@ -7,20 +76,100 @@
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; width: 100%; min-height: 100%; height: 100%; }
-body { overflow: hidden; }
+#root { display: grid; place-items: start center; }
+body { overflow: hidden; background: #000; font-family: var(--font-display), var(--font-korean), ui-sans-serif, system-ui, sans-serif; }
 button, input { font: inherit; }
 
-.kiosk { width: 100%; height: 100%; min-height: 600px; background: #fff; position: relative; overflow: hidden; }
-.screen { width: 100%; height: 100%; min-height: 600px; padding: clamp(2rem, 5vw, 5rem); }
-.screen-center { display: grid; place-content: center; text-align: center; gap: 1rem; }
-.screen-center h1 { margin: 0; font-size: clamp(3rem, 7vw, 8rem); line-height: .95; letter-spacing: -.08em; font-weight: 500; }
-.screen-center h1 strong { color: #087cff; font-weight: 700; }
-
-@property --beam-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
+.kiosk {
+  position: relative;
+  width: min(100vw, calc(100vh * 9 / 16));
+  /* Set both dimensions explicitly. Relying on an auto height can let a
+     flex/grid parent stretch the 9:16 canvas horizontally on wide screens. */
+  height: min(100vh, calc(100vw * 16 / 9));
+  min-width: 0;
+  min-height: 0;
+  margin: 0 auto;
+  overflow: hidden;
+  aspect-ratio: 9 / 16;
+  container-type: size;
+  background: #000;
 }
+
+@supports (height: 100dvh) {
+  .kiosk {
+    width: min(100vw, calc(100dvh * 9 / 16));
+    height: min(100dvh, calc(100vw * 16 / 9));
+  }
+}
+.screen { width: 100%; height: 100%; min-width: 0; min-height: 0; padding: clamp(2rem, 5%, 5rem); container-type: size; }
+
+/* Returning to the idle screen (any resetToIdle() call) fades in from black
+   instead of hard-cutting between screens — the outgoing screen unmounts
+   immediately underneath, masked by this opaque-to-transparent overlay. */
+.reset-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #000;
+  pointer-events: none;
+  animation: reset-fade-out 1.1s cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes reset-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reset-fade { animation: none; opacity: 0; }
+}
+
+/* Dev Monitor orientation preview: keep the original 9:16 canvas intact,
+   rotate that canvas as one unit, and leave the monitor itself upright. */
+.kiosk-screen-rotated {
+  width: min(100vw, calc(100vh * 16 / 9));
+  height: min(100vh, calc(100vw * 9 / 16));
+  aspect-ratio: 16 / 9;
+}
+.kiosk-screen-rotated > .screen {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100cqh;
+  height: 100cqw;
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center;
+}
+.kiosk-screen-rotated > .screen.robot-loading {
+  animation-name: robot-loading-rotated-in;
+}
+.kiosk-screen-rotated > .screen.robot-loading.robot-loading-locked {
+  animation-name: robot-loading-rotated-out;
+}
+.kiosk-screen-rotated > .screen.result-screen {
+  justify-content: center;
+}
+.kiosk-screen-rotated > .screen.result-screen .result-card-wrapper {
+  margin-top: 0;
+}
+.kiosk-screen-rotated > .screen.screen-intro .orb,
+.kiosk-screen-rotated > .screen.result-screen .orb {
+  width: 12cqw;
+}
+.listening-layout > .orb,
+.kiosk-screen-rotated > .screen.screen-intro.screen-intro-request .listening-layout > .orb {
+  width: 14cqw;
+}
+.kiosk-screen-rotated > .screen.result-screen .result-card-soma {
+  font-size: 6.5cqw;
+}
+.kiosk-screen-rotated > .screen.result-screen .result-card-title {
+  font-size: 3.4cqw;
+}
+.kiosk-screen-rotated > .screen.result-screen .result-card-tasks {
+  font-size: 2.6cqw;
+}
+.screen-center { display: grid; place-content: center; text-align: center; gap: 1rem; }
+.screen-center h1 { margin: 0; font-size: 4rem; line-height: .95; letter-spacing: -.08em; font-weight: 500; }
+.screen-center h1 strong { color: #087cff; font-weight: 700; }
 
 .screen-intro {
   position: relative;
@@ -28,7 +177,7 @@ button, input { font: inherit; }
   overflow: hidden;
   display: grid;
   place-items: center;
-  padding: clamp(1.5rem, 4vw, 4rem);
+  padding: clamp(1.5rem, 4cqw, 4rem);
   color: #f6fbff;
   background: #01050a;
 }
@@ -41,70 +190,92 @@ button, input { font: inherit; }
   z-index: 0;
   inset: 0;
   overflow: hidden;
-  opacity: var(--ambient-opacity);
-  background:
-    radial-gradient(ellipse 78% 68% at 53% 53%, rgba(0, 137, 255, .68) 0%, rgba(0, 66, 145, .58) 42%, rgba(0, 25, 71, .38) 70%, transparent 100%),
-    radial-gradient(ellipse 78% 105% at 8% 52%, rgba(17, 165, 204, .34), transparent 68%),
-    linear-gradient(180deg, #01050a 0%, #00223c 52%, #01050a 100%);
-  transition: opacity 3.2s cubic-bezier(.22, 1, .36, 1);
+  opacity: 1;
+  background: #01050a;
 }
-.ambient-wave {
+/* Single soft radial glow behind the prompt, sized/brightened per kiosk phase. */
+.ambient-glow-core {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 138vmin;
-  height: 138vmin;
+  width: var(--glow-size, 46cqw);
+  height: var(--glow-size, 46cqw);
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
+  transform: translate(-50%, -50%);
+  /* sRGB fallback for older kiosk browsers. */
   background: radial-gradient(circle,
-    transparent 0 32%,
-    rgba(0, 89, 214, .06) 38%,
-    rgba(0, 136, 242, .16) 43%,
-    rgba(41, 207, 255, .42) 48%,
-    rgba(74, 226, 255, .56) 55%,
-    rgba(0, 147, 255, .38) 64%,
-    rgba(0, 78, 198, .16) 75%,
-    transparent 84%);
-  filter: blur(25px);
-  mix-blend-mode: screen;
-  opacity: .76;
-  transform: translate(-50%, -50%) scale(var(--voice-ring-scale));
-  animation: ambient-ring-breathe 8s cubic-bezier(.35, .05, .35, 1) infinite;
-  transition: transform .18s ease-out;
-  pointer-events: none;
-  will-change: transform, filter, opacity;
-}
-.ambient-wave-a {
-  animation-delay: -.8s;
-}
-.ambient-wave-b, .ambient-wave-c { display: none; }
-.ambient-glow {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: min(26rem, 64vw);
-  height: clamp(3rem, 6vw, 4.2rem);
-  border-radius: 999px;
-  background: linear-gradient(90deg,
-    transparent 0%,
-    rgba(0, 143, 255, .12) 11%,
-    rgba(16, 204, 255, .34) 28%,
-    rgba(70, 235, 255, .56) 50%,
-    rgba(18, 182, 255, .32) 73%,
+    rgba(0, 204, 255, .92) 0%,
+    rgba(0, 113, 230, .74) 45%,
+    rgba(0, 61, 123, .4) 72%,
     transparent 100%);
-  filter: blur(13px);
-  transform: translate(-50%, -50%) scale(var(--voice-scale));
-  animation: ambient-breathe 8s ease-in-out infinite;
-  transition: transform .18s ease-out, opacity .9s cubic-bezier(.22, 1, .36, 1);
+  /* Previous OKLCH tuning: a broad bright-blue middle, a darker inner
+     region, and a short fade into the black vignette. */
+  background: radial-gradient(circle in oklch,
+    oklch(78% .2 225 / .92) 0%,
+    oklch(61% .22 255 / .82) 58%,
+    oklch(38% .16 255 / .54) 78%,
+    oklch(17% .07 255 / .22) 88%,
+    oklch(8% .03 255 / 0) 100%);
+  filter: blur(clamp(3rem, 8cqw, 9rem));
+  mix-blend-mode: screen;
+  opacity: var(--glow-opacity, .44);
   pointer-events: none;
-  will-change: transform, opacity;
+  transition: width 1.6s cubic-bezier(.22, 1, .36, 1), height 1.6s cubic-bezier(.22, 1, .36, 1), opacity 1.2s ease;
+  will-change: width, height, opacity, transform, filter;
+  /* Idle "breathing": always running underneath the width/height/opacity
+     transitions above, so the glow never sits perfectly still even with no
+     visitor present. Two animations at different, non-multiple periods
+     (13s scale/drift, 8s blur pulse) layer together so the combined motion
+     doesn't read as one simple back-and-forth — plus irregular, asymmetric
+     keyframe stops within each. Pushed noticeably harder (±18% scale, a
+     real blur swing) so the rhythm is unmistakable rather than a static
+     screen that merely isn't glitching. */
+  animation: ambient-breathe 13s ease-in-out infinite, ambient-blur-pulse 8s ease-in-out infinite;
 }
-.ambient-glow::before {
-  content: "";
-  position: absolute;
-  inset: 16% 5%;
-  border: 1px solid rgba(137, 241, 255, .34);
-  border-radius: inherit;
-  box-shadow: inset 0 0 1rem rgba(85, 225, 255, .34), 0 0 1.4rem rgba(29, 209, 255, .3);
+@keyframes ambient-breathe {
+  0%   { transform: translate(-50%, -50%) scale(1)     translate(0%, 0%); }
+  11%  { transform: translate(-50%, -50%) scale(1.16)  translate(2.1%, -1.3%); }
+  23%  { transform: translate(-50%, -50%) scale(0.9)   translate(-1%, 1.7%); }
+  36%  { transform: translate(-50%, -50%) scale(1.12)  translate(-2.3%, -0.8%); }
+  49%  { transform: translate(-50%, -50%) scale(0.86)  translate(1.5%, 2%); }
+  62%  { transform: translate(-50%, -50%) scale(1.2)   translate(-1.3%, -1.9%); }
+  75%  { transform: translate(-50%, -50%) scale(0.92)  translate(1.9%, 1%); }
+  88%  { transform: translate(-50%, -50%) scale(1.08)  translate(-0.7%, -1.5%); }
+  100% { transform: translate(-50%, -50%) scale(1)     translate(0%, 0%); }
+}
+@keyframes ambient-blur-pulse {
+  0%   { filter: blur(clamp(3rem, 8cqw, 9rem)); }
+  35%  { filter: blur(calc(clamp(3rem, 8cqw, 9rem) * .65)); }
+  60%  { filter: blur(calc(clamp(3rem, 8cqw, 9rem) * 1.15)); }
+  100% { filter: blur(clamp(3rem, 8cqw, 9rem)); }
+}
+.screen-intro-state-idle .ambient-glow-core,
+.screen-intro-state-presence .ambient-glow-core {
+  --glow-size: 46cqw;
+  --glow-opacity: .4;
+}
+.screen-intro-state-realtime-connecting .ambient-glow-core {
+  --glow-size: 52cqw;
+  --glow-opacity: .51;
+}
+.screen-intro-state-wake-listen .ambient-glow-core {
+  --glow-size: 62cqw;
+  --glow-opacity: .64;
+}
+.screen-intro-request .ambient-glow-core {
+  --glow-size: 125cqw;
+  --glow-opacity: 1;
+  /* Eidos detected: expand the single disc and switch to the supplied
+     black → blue → mint gradient. P3 is preferred when supported. */
+  background: radial-gradient(50% 50% at 50% 50%,
+    #001428 0%,
+    #0073EE 56.73%,
+    rgba(0, 208, 255, 0.80) 100%);
+  background: radial-gradient(50% 50% at 50% 50%,
+    color(display-p3 0.0160 0.0766 0.1510) 0%,
+    color(display-p3 0 0.4431 0.902) 56.73%,
+    color(display-p3 0 0.8 1 / 0.80) 100%);
 }
 .screen-intro::after {
   content: "";
@@ -112,7 +283,7 @@ button, input { font: inherit; }
   z-index: 1;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse at 54% 52%, transparent 20%, rgba(0, 0, 0, .2) 72%, rgba(0, 0, 0, .64) 100%);
+  background: radial-gradient(ellipse at 54% 52%, transparent 20%, rgba(0, 0, 0, .12) 82%, rgba(0, 0, 0, .72) 96%, rgba(0, 0, 0, .86) 100%);
 }
 .intro-content {
   position: absolute;
@@ -121,22 +292,51 @@ button, input { font: inherit; }
   display: grid;
   place-items: center;
   gap: 0;
-  width: min(100%, 48rem);
+  width: 100%;
   margin: auto;
   padding-top: 0;
   transition: opacity .9s cubic-bezier(.22, 1, .36, 1), transform .9s cubic-bezier(.22, 1, .36, 1), filter .9s ease;
 }
+.intro-prompt-container {
+  position: relative;
+  container-type: inline-size;
+  width: min(44rem, 60%);
+  max-width: calc(100% - 2rem);
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: clamp(1rem, 2.2cqw, 2rem);
+  transition: transform .9s cubic-bezier(.22, 1, .36, 1);
+}
+.screen-intro-ready .intro-prompt-container {
+  transform: translateY(-clamp(.75rem, 2cqw, 1.5rem));
+}
 .intro-content .intro-hint {
-  position: absolute;
-  top: calc(50% + 4.25rem);
-  left: 0;
-  right: 0;
+  width: max-content;
+  max-width: none;
   margin: 0;
   text-align: center;
   color: rgba(220, 238, 255, .55);
-  font-size: clamp(.85rem, 1.2vw, 1.2rem);
+  font-size: clamp(1.05rem, 4.3cqw, 1.55rem);
   letter-spacing: -.02em;
+  white-space: nowrap;
+  position: absolute;
+  top: calc(100% + clamp(1rem, 2.2cqw, 2rem));
+  left: 50%;
+  transform: translate(-50%, 0);
+  opacity: 0;
+  filter: blur(6px);
+  overflow: visible;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  pointer-events: none;
   transition: opacity .7s ease, filter .7s ease;
+}
+.intro-content .intro-hint.is-visible {
+  opacity: 1;
+  filter: blur(0);
+  animation: intro-hint-in .7s cubic-bezier(.22, 1, .36, 1) both;
 }
 .intro-hint-attention {
   --shimmer-base: rgba(220, 238, 255, .62);
@@ -156,7 +356,7 @@ button, input { font: inherit; }
   display: grid;
   grid-template-rows: auto 1fr auto;
   justify-items: center;
-  padding: 14vh clamp(1.5rem, 4vw, 4rem) 6vh;
+  padding: 14cqh clamp(1.5rem, 4cqw, 4rem) 6cqh;
   color: #eafaff;
   opacity: 0;
   transform: scale(1.015);
@@ -170,47 +370,83 @@ button, input { font: inherit; }
   filter: none;
   pointer-events: auto;
 }
-.screen-intro-request .ambient-glow {
-  opacity: 0;
-  animation: none;
-  transform: translate(-50%, -50%) scale(.86);
-}
 .listening-heading {
   display: grid;
-  gap: .3rem;
+  gap: .12rem;
   text-align: center;
-  color: rgba(212, 241, 255, .7);
-  font-size: clamp(1.1rem, 2vw, 2rem);
+  color: #fff;
+  opacity: .7;
+  font-size: clamp(1.1rem, 2.4cqw, 1.5rem);
+  font-weight: 300;
   line-height: 1.2;
-  letter-spacing: -.035em;
+  letter-spacing: 0em;
 }
 .listening-center {
-  align-self: center;
+  position: absolute;
+  top: 50%;
+  left: 50%;
   min-width: 0;
   width: min(100%, 64rem);
   text-align: center;
   display: grid;
   place-items: center;
+  transform: translate(-50%, -50%);
 }
 .listening-placeholder, .listening-transcript, .request-notice {
   grid-area: 1 / 1;
   margin: 0;
-  font-size: clamp(1.25rem, 3vw, 3.2rem);
-  line-height: 1.25;
-  letter-spacing: -.055em;
+  font-size: clamp(1.25rem, 3cqw, 1.75rem);
+  line-height: 1.35;
+  letter-spacing: -.01em;
   transition: opacity .55s ease, filter .55s ease;
 }
 .listening-placeholder {
-  color: rgba(203, 235, 255, .48);
+  color: rgba(220, 247, 255, .9);
+  opacity: 0;
+  filter: blur(7px);
+  font-size: clamp(1.92rem, 4.8cqw, 2.88rem);
   white-space: pre-line;
+  transition: opacity 1.2s ease, filter 1.2s ease;
+  /* Two candidate lines (default instruction / random example) stack and
+     crossfade via .listening-placeholder-text below, instead of the text
+     content swapping in one cut. */
+  display: grid;
+  place-items: center;
+}
+.listening-placeholder.is-visible {
+  opacity: .3;
+  filter: blur(0);
 }
 .listening-placeholder.is-hidden {
   opacity: 0;
   filter: blur(7px);
 }
+.listening-placeholder-text {
+  grid-area: 1 / 1;
+  /* Text Morph-style transition: blur + scale + opacity move together on
+     an easeInOut curve so the outgoing/incoming lines feel like one shape
+     dissolving into the next rather than a plain crossfade. */
+  transition: opacity 1s cubic-bezier(.65, 0, .35, 1), filter 1s cubic-bezier(.65, 0, .35, 1), transform 1s cubic-bezier(.65, 0, .35, 1);
+  transform-origin: center;
+}
+.listening-placeholder-text.is-visible {
+  opacity: 1;
+  filter: blur(0);
+  transform: scale(1);
+}
+.listening-placeholder-text.is-hidden {
+  opacity: 0;
+  filter: blur(14px);
+  transform: scale(1.08);
+}
 .listening-transcript {
+  width: min(60cqw, 64rem);
+  max-width: calc(100% - 2rem);
   color: rgba(220, 247, 255, .9);
-  font-weight: 600;
+  font-size: clamp(1.92rem, 4.8cqw, 2.88rem);
+  font-weight: 400;
+  line-height: 1.42;
+  text-wrap: balance;
 }
 .listening-transcript.is-hidden {
   opacity: 0;
@@ -219,6 +455,9 @@ button, input { font: inherit; }
 .request-notice {
   color: rgba(220, 247, 255, .72);
   white-space: pre-line;
+  /* Match .listening-placeholder's size (e.g. "Eidos에게 원하는 도움을
+     말해보세요") rather than the smaller shared base above. */
+  font-size: clamp(1.92rem, 4.8cqw, 2.88rem);
 }
 .request-notice.is-hidden {
   opacity: 0;
@@ -241,6 +480,10 @@ button, input { font: inherit; }
   position: absolute;
   inset: 0;
   pointer-events: none;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  white-space: pre;
   background-image: linear-gradient(90deg, transparent 0%, transparent 38%, var(--shimmer-highlight) 50%, transparent 62%, transparent 100%);
   background-size: var(--shimmer-band) 100%;
   background-repeat: no-repeat;
@@ -248,263 +491,778 @@ button, input { font: inherit; }
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: t-shimmer var(--shimmer-dur) linear infinite;
+  animation: t-shimmer var(--shimmer-dur) linear .5s infinite;
 }
-.intro-hint {
-  margin: 0;
-  color: rgba(220, 238, 255, .55);
-  font-size: clamp(.85rem, 1.2vw, 1.2rem);
-  letter-spacing: -.02em;
-}
-.prompt-dock {
-  --dock-intensity: 0;
+/* Prompt button rendered as a swapped PNG pair (idle → attention), crossfaded. */
+.prompt-dock-wrap {
   position: relative;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 1.1rem;
-  width: min(31rem, 78vw);
-  min-height: 4.8rem;
-  padding: .45rem .7rem .45rem 1.35rem;
-  overflow: hidden;
-  border: 1px solid rgb(135 233 255 / calc(.28 + var(--dock-intensity) * .44));
-  border-radius: 999px;
-  background: linear-gradient(105deg,
-    rgb(21 201 255 / calc(.1 + var(--dock-intensity) * .16)),
-    rgb(14 96 204 / calc(.2 + var(--dock-intensity) * .26)) 52%,
-    rgb(114 210 255 / calc(.06 + var(--dock-intensity) * .14)));
-  box-shadow:
-    0 0 calc(1.4rem + var(--dock-intensity) * 2.4rem) rgb(0 175 255 / calc(.14 + var(--dock-intensity) * .54)),
-    0 0 calc(.45rem + var(--dock-intensity) * .7rem) rgb(57 224 255 / calc(.12 + var(--dock-intensity) * .3)),
-    inset 0 0 calc(.9rem + var(--dock-intensity) * .7rem) rgb(42 205 255 / calc(.08 + var(--dock-intensity) * .2));
-  backdrop-filter: blur(18px) saturate(140%);
-  color: #effaff;
-  transition: border-color 3.2s ease-in-out, box-shadow 3.2s ease-in-out, background 3.2s ease-in-out;
-}
-.prompt-dock::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: -1px;
-  padding: 1px;
-  border-radius: inherit;
-  background: conic-gradient(from var(--beam-angle), transparent 0 58%, rgba(130, 241, 255, .1) 68%, #6eefff 78%, transparent 90%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: beam-rotate 6s linear infinite;
-  opacity: calc(var(--dock-intensity) * .92);
-  transition: opacity 3.2s ease-in-out;
-  pointer-events: none;
-}
-.prompt-dock-attention .prompt-label {
-  --shimmer-base: #effaff;
-  --shimmer-highlight: #ffffff;
-  --shimmer-dur: 2600ms;
-}
-.prompt-plus {
-  font-size: 2.5rem;
-  font-weight: 200;
-  line-height: 1;
-  color: #fff;
-}
-.prompt-label {
+  z-index: 0;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
-  overflow: hidden;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: clamp(1.05rem, 1.8vw, 1.7rem);
-  letter-spacing: -.04em;
-}
-.prompt-arrow {
+  aspect-ratio: 3693 / 1124;
   display: grid;
   place-items: center;
-  width: 3.15rem;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: rgba(180, 227, 255, .22);
-  color: #fff;
-  font-size: 2rem;
-  font-weight: 200;
-  line-height: 1;
-  box-shadow: inset 0 0 .8rem rgba(255, 255, 255, .14);
+  isolation: isolate;
 }
+.prompt-dock-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+.prompt-dock-image-base {
+  position: relative;
+}
+.prompt-dock-image-active {
+  opacity: 0;
+  transition: opacity 1.6s cubic-bezier(.22, 1, .36, 1);
+}
+.prompt-dock-image-active.is-visible {
+  opacity: 1;
+}
+.soma-number {
+  font-family: "Bitcount Single", sans-serif;
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .06em;
+}
+.intro-hint,
+.listening-placeholder,
+.request-notice,
+.listening-heading,
+.mock-panel,
+.diagnostic-panel,
+.gallery-shell { font-family: var(--font-korean), var(--font-display), sans-serif; }
 
-.eyebrow { margin: 0; color: #087cff; font-size: clamp(1.5rem, 2.2vw, 2.5rem); font-weight: 700; letter-spacing: -.04em; }
-.hint { font-size: clamp(1rem, 1.5vw, 1.5rem); margin: 1rem 0 0; }
-.live-transcript { max-width: 70rem; margin: 1rem auto 0; color: #087cff; font-size: clamp(1.5rem, 3vw, 4rem); line-height: 1.05; font-weight: 650; letter-spacing: -.05em; }
+/* The prompt and its hint move together as one centered feature block. */
+.screen-intro .intro-content { transform: none; }
+.screen-intro-request .intro-content { transform: scale(.98); }
+
+.eyebrow { margin: 0; color: #087cff; font-size: clamp(1.25rem, 2.2cqw, 1.75rem); font-weight: 700; letter-spacing: -.04em; }
+.hint { font-size: 1rem; margin: 1rem 0 0; }
+.live-transcript { max-width: 70rem; margin: 1rem auto 0; color: #087cff; font-size: clamp(1.4rem, 3cqw, 2rem); line-height: 1.05; font-weight: 650; letter-spacing: -.05em; }
 .live-transcript.request { max-width: 65rem; }
-.orb { width: clamp(7rem, 11vw, 12rem); aspect-ratio: 1; border-radius: 50%; position: relative; margin: 3rem auto 0; background: radial-gradient(circle at 50% 44%, #ffffa6 0 8%, #54d4f4 25%, #087cff 65%, #0055d9 100%); box-shadow: 0 0 2rem #35bbff88; animation: breathe 2.4s ease-in-out infinite; }
-.orb span { position: absolute; inset: 16% 42%; border-radius: 50%; background: #fff; opacity: .8; transform: rotate(45deg); }
-.orb span:nth-child(2) { transform: rotate(-45deg); }
-.orb span:nth-child(3) { inset: 42% 16%; transform: rotate(0); opacity: .55; }
-.orb span:nth-child(4) { inset: 42% 16%; transform: rotate(90deg); opacity: .55; }
-.orb-active { animation-duration: 1s; }
+.orb { grid-row: 3; align-self: end; justify-self: center; width: 12cqw; aspect-ratio: 1; position: relative; margin: 3cqw auto 0; overflow: hidden; border-radius: 50%; }
+.orb video { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
 .screen-loading { display: grid; place-content: center; text-align: center; background: radial-gradient(circle at center, #bff4ff 0, #13b7ed 38%, #087cff 100%); color: #fff; }
 .screen-loading .orb { margin: 0 auto 2rem; transform: scale(1.65); box-shadow: none; }
-.screen-loading p { margin: 4rem 0 0; font-size: clamp(1.2rem, 2vw, 2rem); }
+.screen-loading p { margin: 4rem 0 0; font-size: 1.25rem; }
 .robot-loading {
   position: relative;
-  display: block;
+  display: grid;
+  place-items: center;
   padding: 0;
   overflow: hidden;
   isolation: isolate;
-  perspective: 1400px;
-  background: #010204;
+  perspective: 1000px;
+  background: #000;
+  animation: robot-loading-in .55s cubic-bezier(.22, 1, .36, 1) both;
 }
 .robot-loading::before {
   content: "";
   position: absolute;
-  z-index: -1;
+  z-index: -2;
   inset: 0;
   background:
-    radial-gradient(ellipse 46% 35% at 50% 54%, rgba(67, 185, 255, .13), transparent 72%),
-    linear-gradient(180deg, #010204 0%, #05080d 52%, #010204 100%);
+    radial-gradient(ellipse 52% 46% at 50% 50%, rgba(67, 185, 255, .14), transparent 70%),
+    #000;
+}
+.robot-loading::after {
+  content: "";
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    #000 0%,
+    rgba(0, 0, 0, .94) 8%,
+    transparent 23%,
+    transparent 77%,
+    rgba(0, 0, 0, .94) 92%,
+    #000 100%
+  );
+  opacity: .5;
+}
+.animated-gradient-text {
+  display: inline-block;
+  color: transparent;
+  background-image: linear-gradient(90deg, var(--animated-gradient-from), var(--animated-gradient-to), var(--animated-gradient-from));
+  background-size: 220% 100%;
+  background-position: 100% 50%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: animated-gradient-text var(--animated-gradient-duration, 3s) linear infinite;
 }
 .robot-loading-headline {
   position: absolute;
-  z-index: 8;
-  top: 20.5%;
-  left: 1rem;
-  right: 1rem;
-  margin: 0;
-  color: rgba(242, 250, 255, .94);
-  text-align: center;
-  font-size: clamp(1.15rem, 2.5vw, 2.2rem);
-  font-weight: 650;
-  letter-spacing: -.045em;
-  text-shadow: 0 0 1rem rgba(104, 211, 255, .48);
-  animation: robot-loading-headline-in .9s ease-out both;
-}
-.robot-card-stack {
-  position: absolute;
   z-index: 2;
-  top: 31%;
+  top: 9.5cqh;
   left: 50%;
-  width: min(62vw, 30rem);
-  aspect-ratio: 3 / 4;
-  transform: translateX(-50%);
-  transform-style: preserve-3d;
+  width: max-content;
+  max-width: none;
+  margin: 0;
+  text-align: center;
+  color: #ffffff;
+  font-size: clamp(1.2rem, 2.8cqw, 1.65rem);
+  font-weight: 400;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-shadow: none;
+  transform: translate(-50%, -50%);
 }
-.robot-card {
-  --card-core: rgba(83, 190, 255, .82);
-  --card-edge: rgba(14, 49, 69, .92);
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, .16);
-  border-radius: clamp(1.8rem, 5vw, 3.2rem);
-  background:
-    radial-gradient(ellipse 92% 62% at 50% 30%, var(--card-core) 0%, rgba(29, 103, 143, .56) 38%, var(--card-edge) 78%, rgba(1, 5, 8, .98) 100%),
-    #071018;
-  box-shadow: 0 2rem 4rem rgba(0, 0, 0, .48), inset 0 0 2.5rem rgba(255, 255, 255, .08), 0 0 2.5rem color-mix(in srgb, var(--card-core) 32%, transparent);
-  transform-style: preserve-3d;
-  transition: transform .68s cubic-bezier(.22, 1, .36, 1), opacity .68s ease, filter .68s ease, box-shadow .68s ease;
-  backface-visibility: hidden;
+.text-animate {
+  display: inline-block;
+  white-space: pre;
+  vertical-align: top;
+  letter-spacing: inherit;
 }
-.robot-card::before {
-  content: "";
+.text-animate-item {
+  display: inline-block;
+  vertical-align: top;
+  color: inherit;
+  letter-spacing: inherit;
+  opacity: 0;
+  filter: blur(8px);
+  transform: translate3d(0, .55em, 0);
+  animation: text-animate-blur-in-up .62s cubic-bezier(.22, 1, .36, 1) both;
+  animation-delay: var(--text-animate-delay, 0ms);
+  will-change: opacity, filter, transform;
+}
+.text-animate-once .text-animate-item {
+  animation-iteration-count: 1;
+}
+.loading-headline-text {
+  --shimmer-base: rgba(220, 238, 255, .62);
+  --shimmer-highlight: rgba(255, 255, 255, .95);
+  --shimmer-dur: 3000ms;
+}
+.loading-headline-text.t-shimmer {
+  display: inline-block;
+  color: var(--shimmer-base);
+}
+.loading-headline-text.t-shimmer.text-animate-complete {
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 38%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 62%,
+    var(--shimmer-base) 100%
+  );
+  background-size: var(--shimmer-band, 360%) 100%;
+  background-position: 100% 0;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: t-shimmer var(--shimmer-dur) linear infinite;
+}
+.loading-headline-text.t-shimmer::before {
+  content: none;
+  display: none;
+}
+/* Slot-machine analyzing screen -------------------------------------------
+   Layered bottom to top: ambient glow -> three horizontally-looping reel
+   rows -> three fixed glass window frames -> headline. Sizing lives on
+   .slot-stack as custom properties so the window size, item size and row
+   gap can be retuned from one place. */
+.slot-glow {
   position: absolute;
   z-index: 0;
-  inset: 0;
-  background: radial-gradient(ellipse at 50% 38%, transparent 26%, rgba(0, 0, 0, .04) 48%, rgba(0, 0, 0, .68) 100%);
+  top: 50%;
+  left: 50%;
+  width: 96cqw;
+  height: 96cqw;
+  border-radius: 50%;
+  opacity: .3;
+  transform: translate(-50%, -50%);
+  /* Same palette as the intro screen's .ambient-glow-core. */
+  background: radial-gradient(circle,
+    rgba(0, 204, 255, .55) 0%,
+    rgba(0, 113, 230, .4) 45%,
+    rgba(0, 61, 123, .22) 72%,
+    transparent 100%);
+  background: radial-gradient(circle in oklch,
+    oklch(78% .2 225 / .5) 0%,
+    oklch(61% .22 255 / .38) 58%,
+    oklch(38% .16 255 / .24) 78%,
+    oklch(17% .07 255 / .12) 88%,
+    oklch(8% .03 255 / 0) 100%);
+  filter: blur(clamp(2rem, 6cqw, 7rem));
+  mix-blend-mode: screen;
   pointer-events: none;
 }
-.robot-card-previous {
-  z-index: 1;
-  opacity: .42;
-  filter: blur(2.5px) saturate(.8);
-  transform: translate3d(0, -125%, -130px) scale(.72) rotateX(8deg);
-}
-.robot-card-active {
-  z-index: 3;
-  opacity: 1;
-  filter: none;
-  transform: translate3d(0, 0, 90px) scale(1) rotateX(0deg);
-}
-.robot-card-next {
-  z-index: 1;
-  opacity: .38;
-  filter: blur(2.8px) saturate(.78);
-  transform: translate3d(0, 125%, -130px) scale(.72) rotateX(-8deg);
-}
-.robot-loading-locked .robot-card-active {
-  box-shadow: 0 2rem 4rem rgba(0, 0, 0, .52), inset 0 0 2.5rem rgba(255, 255, 255, .1), 0 0 3.5rem color-mix(in srgb, var(--card-core) 48%, transparent);
-}
-.robot-card-tone-1, .robot-card-tone-4 { --card-core: rgba(81, 186, 255, .86); --card-edge: rgba(9, 36, 56, .96); }
-.robot-card-tone-2, .robot-card-tone-5 { --card-core: rgba(100, 220, 255, .78); --card-edge: rgba(20, 50, 67, .96); }
-.robot-card-tone-3 { --card-core: rgba(205, 151, 237, .74); --card-edge: rgba(47, 27, 64, .96); }
-.robot-card-tone-6 { --card-core: rgba(255, 174, 131, .7); --card-edge: rgba(62, 32, 36, .96); }
-.robot-card-header {
-  position: absolute;
-  z-index: 4;
-  top: clamp(1rem, 3vw, 1.8rem);
-  left: .8rem;
-  right: .8rem;
-  display: grid;
-  gap: .18rem;
-  text-align: center;
-  color: rgba(245, 251, 255, .94);
-  text-shadow: 0 1px .65rem rgba(0, 0, 0, .25);
-}
-.robot-card-header strong {
-  overflow: hidden;
-  font-size: clamp(.9rem, 2.15vw, 1.8rem);
-  font-weight: 600;
-  letter-spacing: -.045em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.robot-card-header span {
-  color: rgba(223, 245, 255, .78);
-  font-size: clamp(.65rem, 1.2vw, .95rem);
-  letter-spacing: .03em;
-}
-.robot-card-header small {
-  color: rgba(226, 243, 255, .68);
-  font-size: clamp(.6rem, 1vw, .82rem);
-}
-.robot-card video, .robot-card img {
+.slot-stack {
+  --slot-size: 37.8cqw;
+  --slot-row-gap: 2.6cqh;
+  --slot-item-gap: 5cqw;
   position: absolute;
   z-index: 1;
-  inset: 12% 3% 0;
-  width: 94%;
-  height: 88%;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--slot-row-gap);
+  transform: translate(-50%, -50%);
+}
+.slot-row {
+  position: relative;
+  width: 100cqw;
+  max-width: none;
+  height: var(--slot-size);
+  flex: 0 0 auto;
+}
+.slot-box {
+  position: absolute;
+  /* Behind the reel: the box PNGs are opaque glass plates, and the module
+     renders are transparent everywhere except the robot part itself, so the
+     plate's glow only reads correctly showing through around the module. */
+  z-index: 1;
+  top: 50%;
+  left: 50%;
+  width: var(--slot-size);
+  height: var(--slot-size);
+  transform: translate(-50%, -50%);
   object-fit: contain;
-  object-position: center bottom;
-}
-.robot-card img { opacity: .86; filter: saturate(.82); }
-.robot-card-glass {
-  position: absolute;
-  z-index: 3;
-  inset: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .08), transparent 20%, transparent 72%, rgba(0, 0, 0, .18));
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06), inset 0 -2rem 3rem rgba(0, 0, 0, .18);
+  user-select: none;
+}
+/* Default -> active box crossfade: both images sit in the exact same spot;
+   animation-delay/duration come from ReelTrack's row (REEL_STOP_MS[id] so
+   this starts the instant that row's module docks, BOX_CROSSFADE_MS long).
+   Opacity ramps run in lockstep (1->0 / 0->1) so the two always sum to full
+   opacity — a true crossfade, not a hard cut or a double-exposed flash. */
+.slot-box-default {
+  animation-name: box-crossfade-out;
+  animation-timing-function: ease-in-out;
+  animation-fill-mode: forwards;
+}
+.slot-box-active {
+  opacity: 0;
+  animation-name: box-crossfade-in;
+  animation-timing-function: ease-in-out;
+  animation-fill-mode: forwards;
+}
+.reel-row {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  /* Horizontal edge fade: modules drifting past the fixed window darken
+     toward the row's left/right edges so the centered module (inside
+     .slot-box) reads as the brightest, most in-focus item. The box itself
+     lives outside this element, so its brightness is unaffected. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, .18) 6%,
+    rgba(0, 0, 0, .55) 18%,
+    #000 38%,
+    #000 62%,
+    rgba(0, 0, 0, .55) 82%,
+    rgba(0, 0, 0, .18) 94%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, .18) 6%,
+    rgba(0, 0, 0, .55) 18%,
+    #000 38%,
+    #000 62%,
+    rgba(0, 0, 0, .55) 82%,
+    rgba(0, 0, 0, .18) 94%,
+    transparent 100%
+  );
+}
+.reel-track {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  height: var(--slot-size);
+  gap: var(--slot-item-gap);
+  /* --reel-final and animation-duration come from ReelTrack's inline style
+     (per-row distance + stop time); the keyframe stops below own the
+     cruise -> decelerate -> creep -> land pacing shared by every row. */
+  animation-name: reel-run;
+  animation-timing-function: linear;
+  animation-iteration-count: 1;
+  animation-fill-mode: forwards;
+  will-change: transform;
+}
+.reel-item {
+  flex: 0 0 auto;
+  /* Module art sits within 90% of the box footprint (not edge-to-edge),
+     aspect ratio preserved via object-fit: contain. */
+  width: calc(var(--slot-size) * .9);
+  height: calc(var(--slot-size) * .9);
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+.robot-loading-locked {
+  animation: robot-loading-out .65s cubic-bezier(.4, 0, .8, .2) both;
 }
 .error-screen h1 { color: #087cff; max-width: 55rem; }
 
-.result-screen { display: grid; grid-template-rows: auto 1fr auto; align-items: center; text-align: center; padding: clamp(1.5rem, 4vw, 4rem); }
-.result-screen header h1 { margin: .3rem 0 0; color: #087cff; font-size: clamp(2rem, 5vw, 5rem); letter-spacing: -.07em; }
-.debug-robot-id { color: #5c9fe8; font-size: .48em; letter-spacing: .02em; white-space: nowrap; }
-.robot-video { height: 72vh; min-height: 360px; display: grid; place-items: center; }
-.robot-video video { width: min(60vw, 38rem); height: 100%; object-fit: contain; }
-.result-screen footer { display: flex; justify-content: center; align-items: baseline; gap: 1rem; color: #087cff; font-size: clamp(.9rem, 1.4vw, 1.4rem); }
-.result-screen footer span { color: #6cb2ff; }
-.result-screen footer p { margin: 0; }
+.result-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0;
+  background: #000;
+  color: #fff;
+}
+.result-card-wrapper {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: var(--result-card-width, 83cqw);
+  aspect-ratio: 5364 / 8874;
+  perspective: 1000px;
+  perspective-origin: 50% 50%;
+  /* Keep the perspective ancestor unclipped. An overflow clip here forces
+     the preserve-3d card into a flattened composition, which makes the
+     front face look like a mirrored card instead of revealing the back. */
+  overflow: visible;
+  border-radius: 7.5% / 3.5%;
+}
+.result-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  top: auto;
+  left: auto;
+  margin-top: 0;
+  display: grid;
+  /* Keep the card's 3D context intact. Clipping here would flatten the
+     preserve-3d scene and make the flip look like a horizontal mirror.
+     `isolation` and `container-type` are grouping properties in CSS
+     Transforms L2, so they flatten preserve-3d too — the container query
+     context therefore lives on the faces, which are the same size. */
+  overflow: visible;
+  transform: none;
+  border-radius: inherit;
+  transform-origin: center center;
+  animation: result-card-in 1000ms cubic-bezier(.37, -.01, .02, 1.21) both;
+  transform-style: preserve-3d;
+  transition: transform 900ms cubic-bezier(.22, 1, .36, 1);
+  will-change: transform;
+}
+.result-card.result-card-flipped {
+  /* Use a dedicated animation instead of replacing the entry animation and
+     transition in the same frame. This guarantees a visible 3D flip when
+     the photo stage class is added. */
+  animation: result-card-flip 900ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.result-card-face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  /* The faces match the card box exactly, so hosting the container query
+     context here keeps every cqw value identical to before. */
+  container-type: size;
+  will-change: transform;
+}
+.result-card-face-front {
+  z-index: 1;
+  transform: rotateY(0deg) translateZ(.5px);
+}
+.result-card-face-back {
+  /* The back face is rotated once here, then the card rotates once as a
+     whole. The two rotations cancel for its contents, so text remains
+     readable instead of appearing mirrored. */
+  transform: rotateY(180deg) translateZ(.5px);
+  background: #07131d;
+  z-index: 0;
+}
+.result-card.result-card-flipped .result-card-face-front { z-index: 0; }
+.result-card.result-card-flipped .result-card-face-back { z-index: 1; }
+.result-card-face-back .result-card-header {
+  /* Keep the Soma label above the camera/dim/robot layers. */
+  z-index: 4;
+}
+/* The back face carries only the Soma name over the live camera. */
+.result-card-face-back .result-card-soma {
+  text-shadow: 0 .2em .8em rgba(0, 12, 22, .55);
+}
+.result-card-bg {
+  position: relative;
+  z-index: 0;
+  grid-area: 1 / 1;
+  display: block;
+  /* Size by height and let the intrinsic image ratio determine its width.
+     The parent is locked to the same ratio, so no horizontal resampling can
+     occur even when the kiosk is letterboxed on a wide display. */
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  justify-self: center;
+  align-self: stretch;
+  aspect-ratio: auto;
+  object-fit: contain;
+  object-position: center;
+}
+.result-card-robot-mask {
+  position: absolute;
+  z-index: 1;
+  inset: 13% 0 15%;
+  overflow: hidden;
+}
+.result-card-robot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: 50% 50%;
+  transform-origin: 50% 50%;
+  transform: scale(1.05);
+}
+.result-card-camera-dim {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background: rgba(0, 19, 31, .18);
+  pointer-events: none;
+  transition: background 900ms cubic-bezier(.22, 1, .36, 1);
+}
+/* The robot fills the lower-right of the photo side. It is deliberately larger
+   than the card so it crops against this mask at the right and bottom edges. */
+.result-card-back-robot-mask {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.result-card-back-robot {
+  position: absolute;
+  /* --robot-top/--robot-left/--robot-scale are set inline per robot (see
+     ResultCardBackFace in App.tsx), sourced from RobotCardOffset — tuned
+     live and persisted via the ?gallery Photo-card tab (POST
+     /api/robot-card-offsets), with the fallbacks below matching the
+     original shared box. The 18 source videos each frame their robot at a
+     different scale within their own frame (object-fit: contain fits the
+     raw frame, not the robot's own silhouette), so without a per-robot
+     scale every robot would render at a different apparent size despite
+     sharing this same box. Scales from the bottom-center to match
+     object-position, so feet stay on the same line as the correction is
+     tuned. */
+  top: var(--robot-top, 7.4%);
+  left: var(--robot-left, 9.8%);
+  width: 131%;
+  height: 112%;
+  object-fit: contain;
+  object-position: 50% 100%;
+  transform-origin: 50% 100%;
+  transform: scale(var(--robot-scale, 1));
+}
+.result-camera-preview {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: hidden;
+  background: #081d2b;
+}
+.result-camera-preview video,
+.result-camera-mock-feed {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #081d2b;
+}
+/* Mirror the feed so visitors see themselves as they would in a mirror. */
+.result-camera-preview video {
+  transform: scaleX(-1);
+}
+.result-camera-mock-feed {
+  background:
+    radial-gradient(ellipse at 70% 42%, rgba(110, 206, 255, .36), transparent 34%),
+    radial-gradient(ellipse at 28% 65%, rgba(20, 92, 142, .42), transparent 46%),
+    #071521;
+}
+.result-card-header {
+  position: absolute;
+  z-index: 2;
+  top: 4.6%;
+  right: 4%;
+  left: 4%;
+  display: grid;
+  justify-items: center;
+  gap: 1.7cqw;
+  margin: 0;
+  text-align: center;
+}
+.result-card-soma {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .4em;
+  margin: 0;
+  color: rgba(255, 255, 255, .94);
+  font-size: 6.5cqw;
+  font-weight: 500;
+  line-height: .95;
+  letter-spacing: 0;
+}
+.result-card-soma .soma-number {
+  font-size: 1.1em;
+  font-weight: 100;
+  letter-spacing: -.01em;
+  opacity: .7;
+}
+.result-card-title {
+  position: relative;
+  top: -.28rem;
+  margin: 0;
+  color: #d6e0ed;
+  font-size: 3.4cqw;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: .02em;
+}
+.result-card-tasks {
+  position: absolute;
+  z-index: 2;
+  right: 5%;
+  bottom: 4.8%;
+  left: 5%;
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: .35em;
+  color: rgba(224, 239, 248, .88);
+  text-align: center;
+  font-size: 2.6cqw;
+  font-weight: 300;
+  line-height: 1.2;
+  letter-spacing: .02em;
+}
+.result-card-tasks-label {
+  display: block;
+  color: rgba(255, 255, 255, .5);
+  letter-spacing: .02em;
+  line-height: 1.4;
+}
+.result-card-tasks-value {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: .35em;
+  color: rgba(214, 224, 237, .9);
+  letter-spacing: .02em;
+  line-height: 1.15;
+}
+.result-task-item { white-space: nowrap; }
+.result-orb {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  bottom: auto;
+  left: auto;
+  margin-top: 2.8cqh;
+  transform: none;
+  animation: result-orb-in .75s .18s cubic-bezier(.22, 1, .36, 1) both;
+}
+.result-orb .orb {
+  margin: 0;
+}
+.result-orb-hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  animation: none;
+}
+.result-screen-stage-greeting .result-orb {
+  animation: result-orb-out .85s cubic-bezier(.22, 1, .36, 1) both;
+}
+.result-greeting,
+.photo-capture-prompt {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100% - 2rem);
+  margin: 0;
+  transform: translateX(-50%);
+  color: rgba(220, 238, 255, .55);
+  /* 7.46% of the card's width, same fixed ratio the card's own text uses
+     (e.g. --result-card-soma at 6.5cqw-of-card). Unclamped on purpose so the
+     caption keeps the same proportion to the card at every screen size. */
+  font-size: calc(var(--result-card-width) * .0364);
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  text-align: center;
+  white-space: nowrap;
+  filter: blur(7px);
+  opacity: 0;
+  animation: result-greeting-in .75s .08s cubic-bezier(.22, 1, .36, 1) both;
+}
+/* The caption sits exactly halfway between the card's bottom edge and the
+   screen bottom, so the gap above it matches the gap below. The column is
+   centred by flexbox, so the card's bottom edge is derived from the stack's
+   total height (card + orb gap + orb) rather than hard-coded. */
+.result-screen {
+  /* Single source of truth for the card's size. .result-card-soma/-title/
+     -tasks inside the card scale with plain cqw values of the card's own
+     container (no clamp), so they always stay in proportion to the card. The
+     caption and the capture timer sit outside that container, but deriving
+     their font-size from this same --result-card-width keeps them scaling in
+     lockstep with the card's own text at every screen size too. */
+  --result-card-width: 83cqw;
+  /* 83cqw wide at 5364:8874 => 83 * 8874/5364 */
+  --result-card-height: 137.31cqw;
+  --result-orb-block: calc(12cqw + 2.8cqh);
+  --result-card-bottom: calc((100cqh - var(--result-card-height) - var(--result-orb-block)) / 2 + var(--result-card-height));
+  --result-caption-mid: calc((var(--result-card-bottom) + 100cqh) / 2);
+}
+.result-greeting,
+.photo-capture-prompt {
+  top: var(--result-caption-mid);
+  bottom: auto;
+  transform: translate(-50%, -50%);
+}
+.photo-onboarding {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: rgba(0, 0, 0, .7);
+  color: #fff;
+  text-align: center;
+  /* Match the card's 900ms flip so the dim layer settles with the back face. */
+  animation: photo-onboarding-in 900ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.photo-onboarding-content {
+  display: grid;
+  justify-items: center;
+  gap: .75rem;
+  width: max-content;
+  max-width: calc(100% - 2rem);
+  margin: 0 auto;
+  text-align: center;
+}
+.photo-onboarding-countdown,
+.photo-onboarding-title { margin: 0; }
+.photo-onboarding-countdown {
+  color: rgba(255, 255, 255, .6);
+  font-size: clamp(1rem, 2.9cqw, 1.55rem);
+  font-weight: 300;
+  line-height: 1.1;
+}
+.photo-onboarding-title {
+  color: transparent;
+  background: radial-gradient(circle at center, #a7f5ff 0%, #fff 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-size: clamp(1.5rem, 4.8cqw, 2.7rem);
+  font-weight: 400;
+  line-height: 1.18;
+  letter-spacing: -.02em;
+  white-space: nowrap;
+  filter: blur(8px);
+  opacity: 0;
+  animation: photo-onboarding-title-in .8s .14s cubic-bezier(.22, 1, .36, 1) both;
+}
+.photo-capture-ambient {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  background: #01050a;
+}
+.photo-capture-ambient span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 130cqw;
+  height: 130cqw;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(50% 50% at 50% 50%, #001428 0%, #0073ee 56.73%, rgba(0, 208, 255, .8) 100%);
+  filter: blur(clamp(3rem, 8cqw, 9rem));
+  opacity: .92;
+  mix-blend-mode: screen;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(.84);
+  animation: photo-glow-in 900ms cubic-bezier(.22, 1, .36, 1) both;
+}
+/* Runs slower than the capture window so the glow is still descending when
+   the 30s photo stage ends. */
+.photo-capture-ambient.is-capturing span {
+  animation: photo-glow-drain 38s linear forwards;
+}
+/* Capture countdown: a rounded white outline pill sitting above the caption. */
+.photo-stage-timer {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  /* Anchor the pill's bottom edge above the caption's centre line. */
+  bottom: calc(100cqh - var(--result-caption-mid) + 2.6cqh);
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  min-width: 2.9em;
+  padding: .34em .6em .22em;
+  border: .05625em solid rgba(255, 255, 255, .8);
+  border-radius: 999px;
+  color: #fff;
+  /* 5.54% of the card's width — same derivation as the caption above, so the
+     timer, the caption and the card's own text all resize together. */
+  font-size: calc(var(--result-card-width) * .0273);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: .01em;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: photo-timer-in .75s .08s cubic-bezier(.22, 1, .36, 1) both;
+}
+/* Same entrance as the caption, but anchored by its bottom edge (no -50% Y). */
+@keyframes photo-timer-in {
+  from { opacity: 0; filter: blur(8px); transform: translate(-50%, .55rem); }
+  to { opacity: 1; filter: blur(0); transform: translate(-50%, 0); }
+}
 
 .camera-feed { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .camera-feed-visible { z-index: 31; top: 0; right: 0; width: min(32rem, 38vw); height: auto; padding: .75rem .75rem 0; opacity: 1; background: #080b0f; pointer-events: none; }
 .camera-feed-visible .camera-preview { display: block; position: relative; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; opacity: 1; }
 .face-box { position: absolute; border: 2px solid #42ff91; box-shadow: 0 0 0 1px #042 inset, 0 0 1rem #42ff9166; }
+.hand-landmarks { position: absolute; top: .75rem; right: .75rem; bottom: 0; left: .75rem; width: calc(100% - 1.5rem); height: calc(100% - .75rem); overflow: visible; pointer-events: none; }
+.hand-landmarks line { stroke: #42ff91; stroke-width: 7; stroke-linecap: round; opacity: .95; vector-effect: non-scaling-stroke; }
+.hand-landmarks circle { fill: #baffd4; stroke: #0b6e3b; stroke-width: 3; vector-effect: non-scaling-stroke; }
 .production-status { position: fixed; bottom: .5rem; left: .5rem; color: #bbb; font-size: .65rem; }
 .mock-panel, .operator-panel { position: fixed; z-index: 20; left: 1rem; bottom: 1rem; width: min(24rem, calc(100vw - 2rem)); padding: 1rem; background: #111d; color: #fff; border: 1px solid #fff4; border-radius: 1rem; backdrop-filter: blur(1rem); display: grid; gap: .5rem; font-size: .8rem; }
+.mock-panel { left: .75rem; bottom: .75rem; width: min(18rem, calc(100vw - 1.5rem)); padding: .65rem; gap: .35rem; border-radius: .75rem; font-size: .7rem; }
 .mock-panel span { color: #66d9ff; font-weight: 800; letter-spacing: .1em; }
-.mock-panel input { min-width: 0; padding: .5rem; border: 0; border-radius: .4rem; }
+.mock-panel-handle { cursor: grab; touch-action: none; user-select: none; padding-right: 1.7rem; font-size: .62rem; letter-spacing: .07em !important; white-space: nowrap; }
+.mock-panel-handle:active { cursor: grabbing; }
+.mock-panel-toggle { position: absolute; top: .3rem; right: .3rem; width: 1.3rem; height: 1.3rem; display: grid; place-items: center; padding: 0 !important; border: 1px solid #fff3 !important; border-radius: .3rem !important; background: #fff2 !important; color: #fff !important; font-size: .9rem; line-height: 1; }
+.mock-panel-collapsed { width: auto; min-width: 9rem; padding-right: 2.1rem; }
+.mock-panel-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem; }
+.mock-panel-actions button { min-width: 0; padding: .38rem .42rem; font-size: .68rem; line-height: 1.2; }
+.mock-panel input { min-width: 0; padding: .38rem .45rem; border: 0; border-radius: .35rem; font-size: .72rem; }
+.mock-panel small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c9d6e5; font-size: .6rem; line-height: 1.2; }
 .mock-panel button, .operator-panel button { border: 0; border-radius: .5rem; padding: .5rem .7rem; cursor: pointer; background: #087cff; color: #fff; }
 .operator-panel { left: auto; right: 1rem; bottom: 1rem; }
 .operator-header { display: flex; justify-content: space-between; align-items: center; }
@@ -524,9 +1282,11 @@ button, input { font: inherit; }
 .operator-log strong { font-size: .65rem; text-transform: uppercase; color: #66d9ff; }
 .operator-log span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c9d6e5; }
 
-.kiosk-debug .screen { width: calc(100% - min(32rem, 38vw)); }
+.kiosk-debug .screen { width: 100%; }
+.kiosk-screen-rotated.kiosk-debug > .screen { width: 100cqh; }
 .diagnostic-panel { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: min(32rem, 38vw); overflow: auto; padding: clamp(14rem, 29vw, 25rem) .9rem 1.25rem; background: #0b0e13f5; color: #ecf4ff; border-left: 1px solid #ffffff22; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .74rem; }
 .diagnostic-header { display: flex; justify-content: space-between; gap: .75rem; align-items: flex-start; margin-bottom: .9rem; }
+.diagnostic-header-actions { display: flex; gap: .35rem; flex: 0 0 auto; }
 .diagnostic-header strong { display: block; color: #66d9ff; letter-spacing: .08em; font-size: .8rem; }
 .diagnostic-header span { display: block; margin-top: .25rem; color: #8b9bab; font-size: .65rem; }
 .diagnostic-header button, .diagnostic-panel button { border: 1px solid #ffffff2b; border-radius: .4rem; padding: .45rem .6rem; cursor: pointer; background: #087cff; color: #fff; font: inherit; }
@@ -539,6 +1299,8 @@ button, input { font: inherit; }
 .diagnostic-row { display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; }
 .diagnostic-row span { color: #9eafc1; }
 .diagnostic-row strong { max-width: 70%; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; color: #ecf4ff; font-size: .7rem; }
+.diagnostic-camera-select { display: grid; gap: .25rem; color: #9eafc1; }
+.diagnostic-camera-select select { width: 100%; min-width: 0; padding: .4rem .45rem; border: 1px solid #ffffff1c; border-radius: .3rem; background: #0008; color: #fff; font: inherit; }
 .diagnostic-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .35rem; color: #9eafc1; }
 .diagnostic-grid span { display: flex; justify-content: space-between; padding: .35rem; background: #0004; border-radius: .3rem; }
 .diagnostic-grid b { color: #fff; }
@@ -565,13 +1327,32 @@ button, input { font: inherit; }
 .diagnostic-panel h2 { margin: .25rem 0 0; color: #9eafc1; font-size: .7rem; font-weight: 400; }
 
 .gallery-shell { min-height: 100vh; height: 100vh; overflow: auto; padding: clamp(1.5rem, 4vw, 4rem); background: #202020; color: #fff; }
-.gallery-shell header h1 { margin: .35rem 0; font-size: clamp(2rem, 5vw, 5rem); letter-spacing: -.07em; }
+.gallery-shell header h1 { margin: .35rem 0; font-size: 3rem; letter-spacing: -.07em; }
 .gallery-shell header p { color: #b9c4cf; }
 .gallery-shell code { color: #66d9ff; }
 .gallery-states { display: flex; flex-wrap: wrap; gap: .5rem; margin: 2rem 0; }
 .gallery-states span { padding: .45rem .65rem; border-radius: 999px; background: #087cff; font-size: .7rem; letter-spacing: .08em; }
-.gallery-result { width: min(32rem, 100%); height: 48rem; max-height: 70vh; overflow: hidden; background: #fff; }
-.gallery-result .result-screen { min-height: 48rem; height: 100%; padding: 1rem; }
+.gallery-view-toggle { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+.gallery-view-toggle button { padding: .5rem .9rem; border: 1px solid #fff3; border-radius: 999px; background: #fff1; color: #fff; font-size: .78rem; cursor: pointer; }
+.gallery-view-toggle button.selected { border-color: #66d9ff; background: #66d9ff22; color: #66d9ff; }
+.gallery-offset-panel { display: grid; gap: .75rem; width: min(32rem, 100%); margin-bottom: 1.25rem; padding: 1rem; border: 1px solid #fff2; border-radius: .75rem; background: #ffffff0d; }
+.gallery-offset-row { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+.gallery-offset-row label { display: grid; gap: .3rem; font-size: .72rem; color: #b9c4cf; }
+.gallery-offset-row label span { color: #fff; font-variant-numeric: tabular-nums; }
+.gallery-offset-row input[type="range"] { width: 100%; accent-color: #66d9ff; }
+.gallery-offset-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.gallery-offset-actions button { padding: .5rem .9rem; border: 1px solid #fff3; border-radius: .5rem; background: #fff1; color: #fff; font-size: .76rem; cursor: pointer; }
+.gallery-offset-actions button:disabled { opacity: .5; cursor: default; }
+.gallery-offset-actions button:last-of-type { border-color: #66d9ff88; background: #66d9ff22; color: #66d9ff; }
+.gallery-offset-status { font-size: .74rem; color: #ffcf5c; }
+.gallery-offset-status.status-good { color: #6ee6a0; }
+.gallery-offset-status.status-error { color: #ff7a7a; }
+/* Matches the real kiosk screen's 9:16 portrait exactly (see the
+   .kiosk-screen-rotated 9/16 ratio above) — a mismatched preview box would
+   skew every cqw/cqh-based overlay (like .result-card-back-robot's position
+   and size), making this "position & size" check untrustworthy. */
+.gallery-result { width: auto; height: min(48rem, 78vh); aspect-ratio: 9 / 16; max-width: 100%; overflow: hidden; background: #fff; }
+.gallery-result .result-screen { height: 100%; padding: 1rem; }
 .gallery-result .result-screen header h1 { font-size: 2rem; }
 .gallery-result .robot-video { height: 65%; min-height: 0; }
 .gallery-result .result-screen footer { display: block; font-size: .75rem; }
@@ -582,22 +1363,161 @@ button, input { font: inherit; }
 .gallery-grid span { font-size: .7rem; }
 
 @keyframes breathe { 0%, 100% { transform: scale(.94); opacity: .84; } 50% { transform: scale(1.04); opacity: 1; } }
-@keyframes beam-rotate { to { --beam-angle: 360deg; } }
-@keyframes ambient-ring-breathe {
-  0%, 100% { opacity: .56; filter: blur(22px); }
-  50% { opacity: .92; filter: blur(30px); }
+@keyframes intro-hint-in {
+  from { opacity: 0; filter: blur(6px); transform: translate(-50%, .4rem); }
+  to { opacity: 1; filter: blur(0); transform: translate(-50%, 0); }
 }
-@keyframes ambient-breathe {
-  0%, 100% { opacity: .68; filter: blur(18px); }
-  50% { opacity: .98; filter: blur(26px); }
+@keyframes text-animate-blur-in-up {
+  from { opacity: 0; filter: blur(8px); transform: translate3d(0, .55em, 0); }
+  to { opacity: 1; filter: blur(0); transform: translate3d(0, 0, 0); }
 }
-@keyframes robot-loading-headline-in {
-  from { opacity: 0; filter: blur(8px); transform: translateY(.35rem); }
+@keyframes animated-gradient-text {
+  from { background-position: 100% 50%; }
+  to { background-position: 0% 50%; }
+}
+@keyframes robot-loading-in {
+  from { opacity: 0; transform: scale(.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes robot-loading-rotated-in {
+  from { opacity: 0; transform: translate(-50%, -50%) rotate(90deg) scale(.96); }
+  to { opacity: 1; transform: translate(-50%, -50%) rotate(90deg) scale(1); }
+}
+@keyframes robot-loading-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(.96); }
+}
+@keyframes robot-loading-rotated-out {
+  from { opacity: 1; transform: translate(-50%, -50%) rotate(90deg) scale(1); }
+  to { opacity: 0; transform: translate(-50%, -50%) rotate(90deg) scale(.96); }
+}
+@keyframes result-card-in {
+  from { opacity: 0; transform: scale(.76); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes result-card-flip {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(180deg); }
+}
+@keyframes result-orb-in {
+  from { opacity: 0; transform: translateY(1rem) scale(.86); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes result-orb-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(0) scale(.72); }
+}
+/* Keeps the -50% vertical centring from the caption rule; the animation only
+   adds the small rise-in offset on top of it. */
+@keyframes result-greeting-in {
+  from { opacity: 0; filter: blur(8px); transform: translate(-50%, calc(-50% + .55rem)); }
+  to { opacity: 1; filter: blur(0); transform: translate(-50%, -50%); }
+}
+@keyframes photo-onboarding-title-in {
+  from { opacity: 0; filter: blur(8px); transform: translateY(.55rem); }
   to { opacity: 1; filter: blur(0); transform: translateY(0); }
 }
-@keyframes robot-card-breathe {
-  0%, 100% { transform: translate3d(0, 0, 90px) scale(1) rotateX(0deg); }
-  50% { transform: translate3d(0, -.35%, 100px) scale(1.008) rotateX(.4deg); }
+@keyframes photo-onboarding-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes photo-glow-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.84); }
+  to { opacity: .92; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes photo-glow-drain {
+  from { opacity: .92; transform: translate(-50%, -50%) scale(1); }
+  /* The timer is tied to the glow's top edge reaching the bottom of the
+     viewport, not to its centre point. Keep the diameter constant so the
+     top edge does not disappear early while the circle scales down. */
+  to { opacity: 0; transform: translate(-50%, 118%) scale(1); }
+}
+/* One deterministic pass, not a loop: --reel-final (set per row inline) is
+   the exact landing offset, always a multiple of one item's width. The
+   keyframe stops are spaced in TIME, not distance, so most of the distance
+   is covered early (fast, deliberate browsing) and each later stop covers a
+   visibly smaller slice than the one before it — cruise, decelerate,
+   "almost stopped but still creeping", then land. Because animation-duration
+   differs per row (see ReelTrack), the same shape lands H/C/L at slightly
+   different absolute times, which is what produces the staggered stop —
+   tuned unevenly (see REEL_STOP_GAP_MS in App.tsx) to read as
+   "tak — tak-tak" rather than a flat "tak - tak - tak".
+
+   From 77% on, the track doesn't just decelerate smoothly — it passes
+   through a handful of "magnetic detent" catches, one per module boundary,
+   each an approach (eases to a near-stop) immediately followed by a brief
+   *hold* (two keyframes at the identical value) before releasing into the
+   next approach. --reel-final + N * <item-pitch> is exactly the position
+   that centers the module N slots before the final one inside the box, so
+   every catch lands a real module dead-center, not an arbitrary point. The
+   catches get closer together in distance (N steps 6→4→2→1→0) while their
+   holds get longer, so the "tak, tak-tak, tak—" rhythm audibly/visually
+   tightens right up to the final settle. */
+@keyframes reel-run {
+  0% {
+    transform: translate3d(0, 0, 0);
+    animation-timing-function: cubic-bezier(.33, 1, .68, 1); /* short, easy spin-up into cruise */
+  }
+  15% {
+    /* ~1s mark on the shortest (H) row: cruise begins. */
+    transform: translate3d(calc(var(--reel-final, -50%) * .06), 0, 0);
+    animation-timing-function: linear; /* slow, steady scan — not a casino blur */
+  }
+  77% {
+    /* ~5s mark on H: cruise ends, deceleration begins. */
+    transform: translate3d(calc(var(--reel-final, -50%) * .74), 0, 0);
+    animation-timing-function: cubic-bezier(.16, 1, .3, 1); /* strong ease-out: brakes hard at first, softens */
+  }
+  81% {
+    /* Catch 1 (module 6 slots before the final one), approaching. */
+    transform: translate3d(calc(var(--reel-final, -50%) + 6 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  82.3% {
+    /* Hold — the "tak". */
+    transform: translate3d(calc(var(--reel-final, -50%) + 6 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  86.5% {
+    /* Catch 2 (module 4 slots before final). */
+    transform: translate3d(calc(var(--reel-final, -50%) + 4 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  88% {
+    transform: translate3d(calc(var(--reel-final, -50%) + 4 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  92% {
+    /* Catch 3 (module 2 slots before final) — holds start growing longer. */
+    transform: translate3d(calc(var(--reel-final, -50%) + 2 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  93.8% {
+    transform: translate3d(calc(var(--reel-final, -50%) + 2 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  96.5% {
+    /* Catch 4 (the module immediately before the final one) — the longest hold. */
+    transform: translate3d(calc(var(--reel-final, -50%) + 1 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: cubic-bezier(.22, .61, .36, 1);
+  }
+  98.5% {
+    transform: translate3d(calc(var(--reel-final, -50%) + 1 * (var(--slot-size) * .9 + var(--slot-item-gap))), 0, 0);
+    animation-timing-function: ease-out;
+  }
+  100% {
+    /* Final release — the decisive last "탁" that locks the chosen module
+       exactly on the box center. */
+    transform: translate3d(var(--reel-final, -50%), 0, 0);
+  }
+}
+@keyframes box-crossfade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes box-crossfade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 @keyframes transcript-word-in {
   from { opacity: 0; filter: blur(7px); }
@@ -607,34 +1527,51 @@ button, input { font: inherit; }
   0% { background-position: 100% 0; }
   100% { background-position: 0% 0; }
 }
+@keyframes t-shimmer-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .ambient-wave, .prompt-dock::before, .ambient-glow, .transcript-word, .t-shimmer::before, .robot-loading-headline { animation: none; }
-  .ambient-glow { opacity: .8; }
-  .ambient-wave { opacity: .7; transform: translate(-50%, -50%) scale(var(--voice-ring-scale)); filter: blur(24px); }
+  .ambient-glow-core, .prompt-dock-image-active, .transcript-word, .t-shimmer::before, .robot-loading-headline, .reel-track, .result-card, .result-orb, .result-greeting, .photo-capture-prompt, .photo-stage-timer, .photo-onboarding, .photo-onboarding-title, .photo-capture-ambient span, .slot-box-default, .slot-box-active { animation: none; transition: none; }
+  .reel-track { transform: translate3d(var(--reel-final, -25%), 0, 0) !important; }
+  .slot-box-default { opacity: 0 !important; }
+  .slot-box-active { opacity: 1 !important; }
+  .result-greeting, .photo-capture-prompt, .photo-stage-timer, .photo-onboarding-title { opacity: 1; filter: none; }
+  .photo-capture-ambient span { opacity: .92; transform: translate(-50%, -50%) scale(1); }
+  .text-animate-item { animation: none; opacity: 1; filter: none; transform: none; }
+  .loading-headline-text.t-shimmer .text-animate-item {
+    color: var(--shimmer-base);
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+  .loading-headline-text.t-shimmer.text-animate-complete {
+    color: var(--shimmer-base);
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    animation: none;
+  }
+  .loading-headline-text.t-shimmer::before { opacity: 1; animation: none; }
 }
 
 @media (orientation: landscape) {
-  .robot-loading-headline { top: 17%; }
-  .robot-card-stack { top: 25%; width: min(31vw, 28rem); }
+  .slot-stack { --slot-size: min(26cqh, 25rem); }
+  .result-card-wrapper { margin-top: 0; width: 83%; }
+  .result-orb { margin-top: 2.8cqh; }
 }
 
 @media (max-aspect-ratio: 4/5) {
-  .result-screen { padding: 1.5rem; }
+  .result-screen { padding: 0; }
   .robot-video { height: 64vh; }
   .robot-video video { width: 78vw; }
   .result-screen footer { display: block; }
 }
 
 @media (orientation: portrait) {
-  .ambient-wave { width: 138vmin; height: 138vmin; }
-  .ambient-glow { width: min(26rem, 64vw); height: clamp(3rem, 6vw, 4.2rem); }
   .intro-content { padding-top: 0; }
 }
 
 @media (max-width: 600px) {
   .intro-content { padding-top: 0; }
-  .prompt-dock { width: calc(100vw - 3rem); min-height: 4rem; gap: .7rem; padding-left: 1rem; }
-  .prompt-plus { font-size: 2rem; }
-  .prompt-arrow { width: 2.7rem; font-size: 1.7rem; }
+  .intro-prompt-container { max-width: calc(100% - 1.25rem); }
 }

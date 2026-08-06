@@ -33,6 +33,8 @@ const hiddenRules: Array<{ robotId: number; signals: string[]; reason: string }>
   { robotId: 18, signals: ["공간 전체", "스캔", "변화까지 기록"], reason: "hidden code for spatial scanning" },
 ];
 
+const homeWatchSignals = ["집을 지켜", "집 지켜", "집을 봐", "집 봐", "집을 돌봐", "집을 살펴"];
+
 const environmentRules = {
   scan: ["스캔", "scan", "3d 지도", "3d map", "공간 매핑", "spatial mapping", "동선 분석", "동선을 분석", "디지털 트윈", "공간 기록"],
   water: ["물청소", "세척", "수영장", "침수", "습윤", "물 사출", "배수구", "물 청소", "wash", "wet area"],
@@ -45,6 +47,11 @@ function containsAny(text: string, terms: string[]): string | undefined {
 
 export function resolveHardRoute(input: string): HardRoute | undefined {
   const text = normalize(input);
+
+  const homeWatchTerm = homeWatchSignals.find((signal) => text.includes(normalize(signal)));
+  if (homeWatchTerm) {
+    return { robotId: 2, matchedRule: "hidden-code", reason: `home watch request: ${homeWatchTerm}` };
+  }
 
   for (const rule of hiddenRules) {
     if (rule.signals.every((signal) => text.includes(normalize(signal)))) {

@@ -1,17 +1,66 @@
 import { useEffect, useRef, useState } from "react";
-import { FaceDetector, FilesetResolver } from "@mediapipe/tasks-vision";
+import { FaceDetector, FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 
 type PresenceProps = {
   mock: boolean;
   enabled: boolean;
   diagnostic: boolean;
   resetToken: number;
+  cameraDeviceId: string;
+  handDetectionEnabled: boolean;
+  handWaveEnabled: boolean;
   onPresence: (present: boolean) => void;
+  onHandWave: () => void;
   onStatus: (status: string) => void;
   onTelemetry: (telemetry: FaceTelemetry) => void;
+  onDevices: (devices: CameraDevice[]) => void;
+  onStream?: (stream: MediaStream | null) => void;
+  /** Overrides MIN_FACE_AREA_RATIO — pass a lower value while the visitor is
+   *  expected to stand farther from the camera (e.g. posing for a photo). */
+  minFaceAreaRatio?: number;
+  /** Overrides how long the face can stop qualifying before presence flips
+   *  to absent — raised during the photo stage so stepping back to frame a
+   *  shot doesn't reset the visitor back to the idle screen. */
+  presenceAbsentMs?: number;
 };
 
+export type CameraDevice = { deviceId: string; label: string };
+
 type FaceBox = { x: number; y: number; width: number; height: number };
+type HandPoint = { x: number; y: number; z?: number };
+
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+] as const;
+
+const MIN_FACE_AREA_RATIO = 0.02;
+// Presence can stop qualifying for up to this long before flipping to
+// "absent" (default, outside the photo stage — see presenceAbsentMs prop).
+const DEFAULT_PRESENCE_ABSENT_MS = 2000;
+// Two independent ways to trigger, whichever happens first: a quick side-
+// to-side wave (matches what visitors actually do — natural, fast), or just
+// holding an open palm up for a few seconds (a fallback for someone who
+// raises a hand without moving it, or when motion blur makes the wave's
+// landmark tracking too noisy). Neither alone was reliable enough on its
+// own at real kiosk distances, so both run together now.
+const HAND_HOLD_MS = 5000;
+// Small tolerance so one noisy "not open" frame doesn't restart the whole
+// hold — only a gap longer than this counts as the hand actually leaving.
+const HAND_HOLD_GRACE_MS = 500;
+// Wave-motion thresholds — loosened from the original close-up-tuned
+// values, since a hand farther from the camera covers less normalized
+// frame-width for the same real arm motion.
+const WAVE_WINDOW_MS = 2200;
+const WAVE_MIN_SAMPLES = 5;
+const WAVE_DIRECTION_DELTA = 0.01;
+const WAVE_MIN_DIRECTION_CHANGES = 1;
+const WAVE_MIN_SPAN = 0.11;
+const WAVE_MIN_TRAVELLED = 0.2;
 
 export type FaceTelemetry = {
   camera: "disabled" | "requesting" | "ready" | "error" | "mock";
@@ -24,6 +73,21 @@ export type FaceTelemetry = {
   active: boolean;
   box?: FaceBox;
   lastFrameAt: string;
+  /** Live open-hand diagnostics, present only while a hand landmarker is
+   *  running and handWaveEnabled — lets the real kiosk camera's actual
+   *  numbers be read against the wave/hold thresholds below instead of
+   *  guessing why a hand wasn't recognized. Whichever trigger — wave or
+   *  hold — reaches its threshold first fires onHandWave. */
+  hand?: {
+    open: boolean;
+    palmWidth: number;
+    /** How long the hand has been continuously open, toward HAND_HOLD_MS. */
+    heldMs: number;
+    /** Side-to-side span covered within the wave sample window. */
+    span: number;
+    travelled: number;
+    directionChanges: number;
+  };
 };
 
 function area(box: FaceBox): number {
@@ -62,39 +126,139 @@ function pickFace(boxes: FaceBox[], previous: FaceBox | undefined, frameWidth: n
   })[0];
 }
 
-export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPresence, onStatus, onTelemetry }: PresenceProps) {
+function pointDistance(a: HandPoint, b: HandPoint): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0));
+}
+
+function vectorCosine(a: HandPoint, b: HandPoint, c: HandPoint): number {
+  const first = { x: b.x - a.x, y: b.y - a.y, z: (b.z ?? 0) - (a.z ?? 0) };
+  const second = { x: c.x - b.x, y: c.y - b.y, z: (c.z ?? 0) - (b.z ?? 0) };
+  const firstLength = Math.hypot(first.x, first.y, first.z);
+  const secondLength = Math.hypot(second.x, second.y, second.z);
+  if (!firstLength || !secondLength) return -1;
+  return (first.x * second.x + first.y * second.y + first.z * second.z) / (firstLength * secondLength);
+}
+
+/**
+ * Detect an open palm rather than merely detecting any hand movement.
+ * The fingertip/PIP distance and the joint alignment checks keep curled
+ * fingers from being accepted as a five-finger wave.
+ */
+function hasFiveOpenFingers(landmarks: HandPoint[]): boolean {
+  if (landmarks.length < 21) return false;
+  const wrist = landmarks[0];
+  const palmWidth = pointDistance(landmarks[5], landmarks[17]);
+  // At a real kiosk's camera-to-visitor distance the hand occupies a much
+  // smaller share of the frame than in close-up testing, so this used to
+  // reject genuinely open hands outright. Lowered from .02 — still enough
+  // to ignore a hand that's essentially not resolvable in the frame.
+  if (palmWidth < 0.012) return false;
+
+  const fingerTriples = [
+    [5, 6, 8], // index
+    [9, 10, 12], // middle
+    [13, 14, 16], // ring
+    [17, 18, 20], // pinky
+  ] as const;
+  const fingersOpen = fingerTriples.every(([mcp, pip, tip]) => {
+    const tipDistance = pointDistance(wrist, landmarks[tip]);
+    const pipDistance = pointDistance(wrist, landmarks[pip]);
+    const segmentLength = pointDistance(landmarks[pip], landmarks[tip]);
+    // Ratios are nominally distance-invariant, but a smaller/farther hand
+    // gives MediaPipe fewer pixels per landmark, so its normalized jitter
+    // eats a bigger share of these margins — loosened accordingly.
+    return tipDistance > pipDistance * 1.0
+      && segmentLength > palmWidth * 0.18
+      && vectorCosine(landmarks[mcp], landmarks[pip], landmarks[tip]) > 0.05;
+  });
+
+  // The thumb bends in a different plane, so use its lateral extension and
+  // joint alignment instead of comparing y coordinates.
+  const thumbOpen = pointDistance(landmarks[4], landmarks[2]) > palmWidth * 0.5
+    && pointDistance(wrist, landmarks[4]) > pointDistance(wrist, landmarks[3]) * 1.0
+    && vectorCosine(landmarks[2], landmarks[3], landmarks[4]) > 0;
+  return fingersOpen && thumbOpen;
+}
+
+function handPalmCenter(landmarks: HandPoint[]): number {
+  // Wrist + the four MCP joints are more stable than averaging fingertips,
+  // which can swing independently while the palm moves side to side.
+  return (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5;
+}
+
+export function PresenceDetector({ mock, enabled, diagnostic, resetToken, cameraDeviceId, handDetectionEnabled, handWaveEnabled, onPresence, onHandWave, onStatus, onTelemetry, onDevices, onStream, minFaceAreaRatio, presenceAbsentMs }: PresenceProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [faceBox, setFaceBox] = useState<FaceBox | undefined>();
+  const [handLandmarks, setHandLandmarks] = useState<HandPoint[] | undefined>();
+  const [frameSize, setFrameSize] = useState({ width: 1, height: 1 });
   const onPresenceRef = useRef(onPresence);
+  const onHandWaveRef = useRef(onHandWave);
+  const handWaveEnabledRef = useRef(handWaveEnabled);
   const onStatusRef = useRef(onStatus);
   const onTelemetryRef = useRef(onTelemetry);
+  const onDevicesRef = useRef(onDevices);
+  const onStreamRef = useRef(onStream);
   const resetTokenRef = useRef(resetToken);
+  const cameraReadyRef = useRef(false);
+  const minFaceAreaRatioRef = useRef(minFaceAreaRatio);
+  const presenceAbsentMsRef = useRef(presenceAbsentMs);
 
   useEffect(() => { onPresenceRef.current = onPresence; }, [onPresence]);
+  useEffect(() => { onHandWaveRef.current = onHandWave; }, [onHandWave]);
+  useEffect(() => { handWaveEnabledRef.current = handWaveEnabled; }, [handWaveEnabled]);
   useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
   useEffect(() => { onTelemetryRef.current = onTelemetry; }, [onTelemetry]);
+  useEffect(() => { onDevicesRef.current = onDevices; }, [onDevices]);
+  useEffect(() => { onStreamRef.current = onStream; }, [onStream]);
   useEffect(() => { resetTokenRef.current = resetToken; }, [resetToken]);
+  useEffect(() => { minFaceAreaRatioRef.current = minFaceAreaRatio; }, [minFaceAreaRatio]);
+  useEffect(() => { presenceAbsentMsRef.current = presenceAbsentMs; }, [presenceAbsentMs]);
 
   useEffect(() => {
     if (!mock || !enabled) return;
-    onStatusRef.current("Mock presence active");
-    onTelemetryRef.current({ camera: "mock", detector: "idle", faceCount: 1, confidence: 1, areaRatio: 1, stableMs: 800, absentMs: 0, active: true, lastFrameAt: new Date().toISOString() });
-    const timer = window.setTimeout(() => onPresenceRef.current(true), 600);
+    cameraReadyRef.current = false;
+    onStatusRef.current("Mock mode: requesting real camera · allow access to test hand detection");
+    onTelemetryRef.current({ camera: "requesting", detector: "loading", faceCount: 0, confidence: 0, areaRatio: 0, stableMs: 0, absentMs: 0, active: false, lastFrameAt: new Date().toISOString() });
+    // The real camera (see the effect below) is always requested in mock
+    // mode too, specifically so hand-wave/photo testing works against a
+    // real webcam without needing the live API. This fallback only exists
+    // for when there's genuinely no camera/permission — it used to fire
+    // after 1.5s, which is far too soon for a human to notice and click an
+    // actual "Allow camera" browser prompt, so it was masking a real camera
+    // that would have connected a couple of seconds later with a fake one.
+    const timer = window.setTimeout(() => {
+      if (cameraReadyRef.current) return;
+      onStatusRef.current("Mock camera unavailable · simulated presence active");
+      onTelemetryRef.current({ camera: "mock", detector: "idle", faceCount: 1, confidence: 1, areaRatio: 1, stableMs: 800, absentMs: 0, active: true, lastFrameAt: new Date().toISOString() });
+      onPresenceRef.current(true);
+    }, 6000);
     return () => window.clearTimeout(timer);
   }, [enabled, mock, resetToken]);
 
   useEffect(() => {
-    if (mock || !enabled) return;
+    if (!enabled) return;
+    setHandLandmarks(undefined);
+    setFrameSize({ width: 1, height: 1 });
     let disposed = false;
     let animationFrame = 0;
     let detector: FaceDetector | undefined;
+    let handLandmarker: HandLandmarker | undefined;
     let lastDetection = 0;
+    let lastHandDetection = 0;
     let stableSince = 0;
     let absentSince = 0;
     let active = false;
     let previousBox: FaceBox | undefined;
     let handledResetToken = resetTokenRef.current;
+    let handWaveCooldownUntil = 0;
+    let handReadyReported = false;
+    // Dwell-time hold tracking.
+    let openHandSince = 0;
+    let lastOpenSeenAt = 0;
+    // Wave-motion tracking, running in parallel with the hold above.
+    let smoothedHandX: number | undefined;
+    const handHistory: Array<{ x: number; at: number }> = [];
 
     const resetTracking = () => {
       active = false;
@@ -106,16 +270,29 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
     async function start() {
       try {
         onTelemetryRef.current({ camera: "requesting", detector: "loading", faceCount: 0, confidence: 0, areaRatio: 0, stableMs: 0, absentMs: 0, active: false, lastFrameAt: new Date().toISOString() });
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: cameraDeviceId ? { deviceId: { exact: cameraDeviceId } } : true,
+          audio: false,
+        });
         if (disposed) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
         streamRef.current = stream;
+        onStreamRef.current?.(stream);
+        cameraReadyRef.current = true;
+        try {
+          const devices = (await navigator.mediaDevices.enumerateDevices())
+            .filter((device) => device.kind === "videoinput")
+            .map((device) => ({ deviceId: device.deviceId, label: device.label || "Camera" }));
+          onDevicesRef.current(devices);
+        } catch {
+          // Device enumeration is optional; the active stream can still run.
+        }
         if (!videoRef.current) return;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
-        onStatusRef.current("Camera ready");
+        onStatusRef.current(`Camera ready · ${stream.getVideoTracks()[0]?.label || "selected device"}`);
         onTelemetryRef.current({ camera: "ready", detector: "loading", faceCount: 0, confidence: 0, areaRatio: 0, stableMs: 0, absentMs: 0, active: false, lastFrameAt: new Date().toISOString() });
         const wasmUrl = import.meta.env.VITE_FACE_WASM_URL ?? "/mediapipe/wasm";
         const modelUrl = import.meta.env.VITE_FACE_MODEL_URL ?? "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
@@ -125,7 +302,23 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
           runningMode: "VIDEO",
           minDetectionConfidence: 0.65,
         });
-        onStatusRef.current("Face detector ready");
+        if (handDetectionEnabled) {
+          try {
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath: import.meta.env.VITE_HAND_MODEL_URL ?? "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+              },
+              runningMode: "VIDEO",
+              numHands: 1,
+              minHandDetectionConfidence: 0.55,
+              minHandPresenceConfidence: 0.55,
+              minTrackingConfidence: 0.55,
+            });
+          } catch {
+            onStatusRef.current("Hand detector unavailable · use mock wave control");
+          }
+        }
+        onStatusRef.current(handLandmarker ? "Face detector ready · open hand wave enabled" : "Face detector ready");
         onTelemetryRef.current({ camera: "ready", detector: "ready", faceCount: 0, confidence: 0, areaRatio: 0, stableMs: 0, absentMs: 0, active: false, lastFrameAt: new Date().toISOString() });
 
         const tick = (timestamp: number) => {
@@ -146,9 +339,12 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
           const confidence = result.detections.reduce((highest, detection) => Math.max(highest, detection.categories[0]?.score ?? 0), 0);
           const frameWidth = videoRef.current.videoWidth;
           const frameHeight = videoRef.current.videoHeight;
+          if (frameWidth > 0 && frameHeight > 0) {
+            setFrameSize((previous) => previous.width === frameWidth && previous.height === frameHeight ? previous : { width: frameWidth, height: frameHeight });
+          }
           const tracked = pickFace(boxes, previousBox, frameWidth, frameHeight);
           const frameArea = Math.max(1, frameWidth * frameHeight);
-          const qualifies = tracked && area(tracked) / frameArea >= 0.04;
+          const qualifies = tracked && area(tracked) / frameArea >= (minFaceAreaRatioRef.current ?? MIN_FACE_AREA_RATIO);
           const stableMs = qualifies && stableSince ? timestamp - stableSince : 0;
           const absentMs = !qualifies && absentSince ? timestamp - absentSince : 0;
           setFaceBox(tracked && qualifies ? {
@@ -157,6 +353,94 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
             width: tracked.width / frameWidth,
             height: tracked.height / frameHeight,
           } : undefined);
+
+          // Wave-metrics diagnostics: computed whenever a hand is tracked,
+          // regardless of whether it's yet long enough to trigger, so the
+          // operator panel can show the *actual* numbers a real kiosk
+          // camera is producing against the thresholds below.
+          let handDiag: NonNullable<FaceTelemetry["hand"]> | undefined;
+
+          if (handLandmarker && timestamp - lastHandDetection >= 100) {
+            lastHandDetection = timestamp;
+            const handResult = handLandmarker.detectForVideo(videoRef.current, timestamp);
+            const candidates = handResult.landmarks
+              .filter((landmarks) => landmarks.length >= 21)
+              .map((landmarks) => {
+                const points = landmarks as HandPoint[];
+                return { landmarks: points, open: hasFiveOpenFingers(points) };
+              })
+              .sort((a, b) => Number(b.open) - Number(a.open));
+            const candidate = candidates[0];
+            setHandLandmarks(candidate?.landmarks);
+
+            if (!handWaveEnabledRef.current) {
+              openHandSince = 0;
+              handReadyReported = false;
+              handHistory.length = 0;
+              smoothedHandX = undefined;
+            } else if (candidate?.open) {
+              if (!handReadyReported) {
+                handReadyReported = true;
+                onStatusRef.current("Open hand detected · wave, or hold still a moment");
+              }
+              // Hold path.
+              if (!openHandSince) openHandSince = timestamp;
+              lastOpenSeenAt = timestamp;
+              const heldMs = timestamp - openHandSince;
+
+              // Wave path, tracked in parallel.
+              const rawHandX = handPalmCenter(candidate.landmarks);
+              smoothedHandX = smoothedHandX === undefined ? rawHandX : smoothedHandX * 0.58 + rawHandX * 0.42;
+              handHistory.push({ x: smoothedHandX, at: timestamp });
+              while (handHistory.length && timestamp - handHistory[0].at > WAVE_WINDOW_MS) handHistory.shift();
+              let directionChanges = 0;
+              let previousDirection = 0;
+              let spanMin = handHistory[0].x;
+              let spanMax = handHistory[0].x;
+              let travelled = 0;
+              for (let index = 1; index < handHistory.length; index += 1) {
+                const delta = handHistory[index].x - handHistory[index - 1].x;
+                spanMin = Math.min(spanMin, handHistory[index].x);
+                spanMax = Math.max(spanMax, handHistory[index].x);
+                travelled += Math.abs(delta);
+                const direction = Math.abs(delta) >= WAVE_DIRECTION_DELTA ? Math.sign(delta) : 0;
+                if (direction && previousDirection && direction !== previousDirection) directionChanges += 1;
+                if (direction) previousDirection = direction;
+              }
+              const span = spanMax - spanMin;
+              handDiag = { open: true, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs, span, travelled, directionChanges };
+
+              const waveTriggered = handHistory.length >= WAVE_MIN_SAMPLES
+                && directionChanges >= WAVE_MIN_DIRECTION_CHANGES && span >= WAVE_MIN_SPAN && travelled >= WAVE_MIN_TRAVELLED;
+              const holdTriggered = heldMs >= HAND_HOLD_MS;
+              if (timestamp >= handWaveCooldownUntil && (waveTriggered || holdTriggered)) {
+                handWaveCooldownUntil = timestamp + 3500;
+                openHandSince = 0;
+                handReadyReported = false;
+                handHistory.length = 0;
+                smoothedHandX = undefined;
+                onStatusRef.current(waveTriggered ? "Open hand wave detected" : "Open hand held · continuing");
+                onHandWaveRef.current();
+              }
+            } else {
+              // A single noisy "not open" frame shouldn't restart the whole
+              // hold — only actually reset once the gap outlasts the grace
+              // window, so brief MediaPipe misclassification doesn't punish
+              // someone who has genuinely been holding their hand up.
+              if (openHandSince && timestamp - lastOpenSeenAt > HAND_HOLD_GRACE_MS) {
+                openHandSince = 0;
+                handReadyReported = false;
+              }
+              smoothedHandX = undefined;
+              if (handHistory.length) handHistory.splice(0, Math.max(0, handHistory.length - 3));
+              handDiag = candidate
+                ? { open: false, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs: openHandSince ? timestamp - openHandSince : 0, span: 0, travelled: 0, directionChanges: 0 }
+                : undefined;
+            }
+          } else if (!handLandmarker) {
+            setHandLandmarks(undefined);
+          }
+
           onTelemetryRef.current({
             camera: "ready",
             detector: "ready",
@@ -173,7 +457,14 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
               height: tracked.height / frameHeight,
             } : undefined,
             lastFrameAt: new Date().toISOString(),
+            hand: handDiag,
           });
+
+          if (!handWaveEnabledRef.current) {
+            openHandSince = 0;
+            handHistory.length = 0;
+            smoothedHandX = undefined;
+          }
           if (qualifies && tracked) {
             previousBox = tracked;
             absentSince = 0;
@@ -185,7 +476,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
           } else {
             stableSince = 0;
             if (!absentSince) absentSince = timestamp;
-            if (active && timestamp - absentSince >= 2000) {
+            if (active && timestamp - absentSince >= (presenceAbsentMsRef.current ?? DEFAULT_PRESENCE_ABSENT_MS)) {
               active = false;
               previousBox = undefined;
               onPresenceRef.current(false);
@@ -194,6 +485,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
         };
         animationFrame = requestAnimationFrame(tick);
       } catch (error) {
+        cameraReadyRef.current = false;
         onStatusRef.current(error instanceof Error ? error.message : "Camera setup failed");
         onTelemetryRef.current({ camera: "error", detector: "error", faceCount: 0, confidence: 0, areaRatio: 0, stableMs: 0, absentMs: 0, active: false, lastFrameAt: new Date().toISOString() });
         onPresenceRef.current(false);
@@ -205,14 +497,21 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, onPres
       disposed = true;
       cancelAnimationFrame(animationFrame);
       detector?.close();
+      handLandmarker?.close();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      onStreamRef.current?.(null);
+      cameraReadyRef.current = false;
+      setHandLandmarks(undefined);
     };
-  }, [enabled, mock]);
+  }, [cameraDeviceId, enabled, handDetectionEnabled, mock]);
 
-  if (mock) return null;
   return <div className={`camera-feed ${diagnostic ? "camera-feed-visible" : ""}`}>
     <video ref={videoRef} className="camera-preview" muted playsInline aria-label="Live camera diagnostic preview" />
     {diagnostic && faceBox && <div className="face-box" style={{ left: `${faceBox.x * 100}%`, top: `${faceBox.y * 100}%`, width: `${faceBox.width * 100}%`, height: `${faceBox.height * 100}%` }} />}
+    {diagnostic && handLandmarks && <svg className="hand-landmarks" viewBox={`0 0 ${frameSize.width} ${frameSize.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      {HAND_CONNECTIONS.map(([from, to]) => <line key={`${from}-${to}`} x1={handLandmarks[from].x * frameSize.width} y1={handLandmarks[from].y * frameSize.height} x2={handLandmarks[to].x * frameSize.width} y2={handLandmarks[to].y * frameSize.height} />)}
+      {handLandmarks.map((point, index) => <circle key={index} cx={point.x * frameSize.width} cy={point.y * frameSize.height} r={Math.max(frameSize.width, frameSize.height) * .008} />)}
+    </svg>}
   </div>;
 }
