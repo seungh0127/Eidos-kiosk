@@ -230,7 +230,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
     const timer = window.setTimeout(() => {
       if (cameraReadyRef.current) return;
       onStatusRef.current("Mock camera unavailable · simulated presence active");
-      onTelemetryRef.current({ camera: "mock", detector: "idle", faceCount: 1, confidence: 1, areaRatio: 1, stableMs: 800, absentMs: 0, active: true, lastFrameAt: new Date().toISOString() });
+      onTelemetryRef.current({ camera: "mock", detector: "idle", faceCount: 1, confidence: 1, areaRatio: 1, stableMs: 500, absentMs: 0, active: true, lastFrameAt: new Date().toISOString() });
       onPresenceRef.current(true);
     }, 6000);
     return () => window.clearTimeout(timer);
@@ -469,7 +469,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
             previousBox = tracked;
             absentSince = 0;
             if (!stableSince) stableSince = timestamp;
-            if (!active && timestamp - stableSince >= 800) {
+            if (!active && timestamp - stableSince >= 500) {
               active = true;
               onPresenceRef.current(true);
             }

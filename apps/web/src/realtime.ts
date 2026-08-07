@@ -3,6 +3,27 @@ export type RealtimeCallbacks = {
   onCompleted: (transcript: string) => void;
   onStatus?: (status: "preparing" | "connecting" | "connected" | "closed" | "error", detail?: string) => void;
   onAudioLevel?: (level: number) => void;
+  onVad?: (snapshot: VadSnapshot) => void;
+  onTurnDetection?: (mode: "semantic_vad" | "local_vad") => void;
+};
+
+export type RealtimeVadConfig = {
+  speechThreshold?: number;
+  noiseMultiplier?: number;
+  noiseMargin?: number;
+  startMs?: number;
+  minSpeechMs?: number;
+  silenceMs?: number;
+  maxSpeechMs?: number;
+};
+
+export type VadSnapshot = {
+  level: number;
+  noiseFloor: number;
+  threshold: number;
+  speechActive: boolean;
+  calibrated: boolean;
+  lastCommitAt: number | null;
 };
 
 export type RealtimeStop = (() => void) & {
@@ -17,24 +38,20 @@ export class RealtimeConnectionCancelledError extends Error {
   }
 }
 
-type RealtimeOptions = { signal?: AbortSignal };
+type RealtimeOptions = { signal?: AbortSignal; vad?: RealtimeVadConfig };
+type TurnDetectionMode = "semantic_vad" | "local_vad";
 
 // These are deliberately conservative starting values for the exhibition mic.
 // They can be tuned later using the operator panel's input-level telemetry.
 const LOCAL_SPEECH_THRESHOLD = 0.08;
 const LOCAL_START_MS = 220;
-const LOCAL_SILENCE_MS = 1000;
 const LOCAL_MIN_SPEECH_MS = 260;
+const LOCAL_SILENCE_MS = 1000;
 const LOCAL_NOISE_CALIBRATION_MS = 700;
 const LOCAL_NOISE_MARGIN = 0.035;
-// Safety net: the noise floor is calibrated once, briefly, right when the
-// connection opens. If real exhibition-hall ambient noise later runs higher
-// than that snapshot, the level can stay above the speech threshold through
-// what the visitor experiences as silence, so LOCAL_SILENCE_MS's turn-end
-// detection never fires and the request never finalizes — this was likely
-// the "finished talking but nothing happens" bug. Forcing a commit once a
-// turn has been open this long guarantees it can never hang indefinitely,
-// independent of whatever the noise floor actually is.
+// Safety net: an unusually long local turn is committed even if a noisy room
+// keeps the amplitude above threshold. This guarantees the kiosk cannot hang
+// indefinitely waiting for a quiet interval.
 const LOCAL_MAX_SPEECH_MS = 6000;
 const REALTIME_READY_TIMEOUT_MS = 15_000;
 
@@ -62,8 +79,25 @@ async function formatSessionError(response: Response): Promise<string> {
   return `Realtime session request failed (HTTP ${response.status})`;
 }
 
+function percentile(values: number[], fraction: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * fraction)));
+  return sorted[index] ?? 0;
+}
+
 export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, options: RealtimeOptions = {}): Promise<RealtimeStop> {
   const { signal } = options;
+  const vad = {
+    speechThreshold: LOCAL_SPEECH_THRESHOLD,
+    noiseMultiplier: 1.8,
+    noiseMargin: LOCAL_NOISE_MARGIN,
+    startMs: LOCAL_START_MS,
+    minSpeechMs: LOCAL_MIN_SPEECH_MS,
+    silenceMs: LOCAL_SILENCE_MS,
+    maxSpeechMs: LOCAL_MAX_SPEECH_MS,
+    ...options.vad,
+  };
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("이 브라우저에서 마이크를 사용할 수 없습니다.");
   }
@@ -71,7 +105,16 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
 
   callbacks.onStatus?.("preparing");
   const peer = new RTCPeerConnection();
-  const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const audioStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: { ideal: 1 },
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      // AGC can amplify a distant side conversation during a quiet interval.
+      // Keep it off and let the visitor's mic level remain stable instead.
+      autoGainControl: { ideal: false },
+    },
+  });
   if (signal?.aborted) {
     peer.close();
     audioStream.getTracks().forEach((track) => track.stop());
@@ -87,8 +130,14 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
   let speechStartedAt = 0;
   let speechCandidateSince = 0;
   let lastVoiceAt = 0;
+  let semanticSpeechActive = false;
+  let semanticSpeechStartedAt = 0;
+  let turnDetectionMode: TurnDetectionMode = "local_vad";
   let paused = false;
+  let noiseFloor = 0;
+  let noiseCalibrated = false;
   let vadReady = false;
+  let lastCommitAt: number | null = null;
   let closeReported = false;
   let readySettled = false;
   let readyTimer: number | null = null;
@@ -115,6 +164,9 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
     callbacks.onStatus?.("closed");
   };
 
+  // Keep the wake-listen prompt behind the short noise-floor calibration.
+  // This is the pre-speed-up behavior: the prompt appears only after both
+  // the data channel and the local microphone baseline are ready.
   const resolveReadyIfPossible = () => {
     if (readySettled || !dataChannelReady || !vadReady) return;
     readySettled = true;
@@ -128,9 +180,12 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
   });
   const abortHandler = () => stop();
 
+  // Local VAD is the compatibility path used when the provider rejects
+  // semantic turn detection for the current transcription model.
   const commitTurn = (timestamp: number) => {
-    if (!speechActive || !dataChannelReady || dataChannel.readyState !== "open") return;
-    if (!speechStartedAt || timestamp - speechStartedAt < LOCAL_MIN_SPEECH_MS) {
+    if (turnDetectionMode !== "local_vad" || !speechActive || !dataChannelReady || dataChannel.readyState !== "open") return;
+    const startedAt = speechStartedAt;
+    if (!startedAt || timestamp - startedAt < vad.minSpeechMs) {
       speechActive = false;
       speechStartedAt = 0;
       speechCandidateSince = 0;
@@ -142,7 +197,35 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
     speechStartedAt = 0;
     speechCandidateSince = 0;
     lastVoiceAt = timestamp;
+    lastCommitAt = timestamp;
+    callbacks.onVad?.({
+      level: 0,
+      noiseFloor,
+      threshold: Math.max(vad.speechThreshold, noiseFloor * vad.noiseMultiplier + vad.noiseMargin),
+      speechActive: false,
+      calibrated: noiseCalibrated,
+      lastCommitAt,
+    });
     callbacks.onStatus?.("connected", "Local VAD: turn committed");
+  };
+
+  const commitSemanticSafetyTurn = (timestamp: number) => {
+    if (turnDetectionMode !== "semantic_vad" || !semanticSpeechActive || !dataChannelReady || dataChannel.readyState !== "open") return;
+    const startedAt = semanticSpeechStartedAt;
+    if (!startedAt || timestamp - startedAt < vad.minSpeechMs) return;
+    dataChannel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    semanticSpeechActive = false;
+    semanticSpeechStartedAt = 0;
+    lastCommitAt = timestamp;
+    callbacks.onVad?.({
+      level: 0,
+      noiseFloor,
+      threshold: Math.max(vad.speechThreshold, noiseFloor * vad.noiseMultiplier + vad.noiseMargin),
+      speechActive: false,
+      calibrated: noiseCalibrated,
+      lastCommitAt,
+    });
+    callbacks.onStatus?.("connected", "Semantic VAD safety commit");
   };
 
   const setPaused = (nextPaused: boolean) => {
@@ -152,8 +235,18 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
     speechStartedAt = 0;
     speechCandidateSince = 0;
     lastVoiceAt = 0;
+    semanticSpeechActive = false;
+    semanticSpeechStartedAt = 0;
     audioStream.getAudioTracks().forEach((track) => { track.enabled = !nextPaused; });
     callbacks.onAudioLevel?.(0);
+    callbacks.onVad?.({
+      level: 0,
+      noiseFloor,
+      threshold: Math.max(vad.speechThreshold, noiseFloor * vad.noiseMultiplier + vad.noiseMargin),
+      speechActive: false,
+      calibrated: noiseCalibrated,
+      lastCommitAt,
+    });
     callbacks.onStatus?.("connected", nextPaused ? "Microphone paused by operator" : "Microphone resumed");
   };
 
@@ -166,6 +259,8 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
     speechStartedAt = 0;
     speechCandidateSince = 0;
     lastVoiceAt = 0;
+    semanticSpeechActive = false;
+    semanticSpeechStartedAt = 0;
     dataChannel.close();
     peer.close();
     audioStream.getTracks().forEach((track) => track.stop());
@@ -179,7 +274,9 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
 
   signal?.addEventListener("abort", abortHandler, { once: true });
   audioStream.getTracks().forEach((track) => peer.addTrack(track, audioStream));
-  callbacks.onStatus?.("preparing", `Microphone ready (${audioStream.getAudioTracks()[0]?.readyState ?? "unknown"})`);
+  const audioTrack = audioStream.getAudioTracks()[0];
+  const audioSettings = audioTrack?.getSettings();
+  callbacks.onStatus?.("preparing", `Microphone ready (${audioTrack?.readyState ?? "unknown"}) · NS ${audioSettings?.noiseSuppression === false ? "off" : "on"} · EC ${audioSettings?.echoCancellation === false ? "off" : "on"} · AGC ${audioSettings?.autoGainControl === true ? "on" : "off"}`);
 
   try {
     audioContext = new AudioContext();
@@ -191,10 +288,7 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
     const samples = new Float32Array(analyser.fftSize);
     let lastReport = 0;
     const calibrationStartedAt = performance.now();
-    let calibrationSum = 0;
-    let calibrationCount = 0;
-    let noiseFloor = 0;
-    let noiseCalibrated = false;
+    const calibrationLevels: number[] = [];
 
     const meter = (timestamp: number) => {
       if (closed) return;
@@ -215,10 +309,11 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
         callbacks.onAudioLevel?.(level);
 
         if (!noiseCalibrated) {
-          calibrationSum += level;
-          calibrationCount += 1;
+          calibrationLevels.push(level);
           if (timestamp - calibrationStartedAt >= LOCAL_NOISE_CALIBRATION_MS) {
-            noiseFloor = calibrationCount ? calibrationSum / calibrationCount : 0;
+            // Use a high percentile so intermittent hall noise contributes to
+            // the threshold instead of disappearing into a quiet average.
+            noiseFloor = percentile(calibrationLevels, 0.9);
             noiseCalibrated = true;
             vadReady = true;
             callbacks.onStatus?.("connected", `Local VAD ready · noise floor ${noiseFloor.toFixed(3)}`);
@@ -226,34 +321,35 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
           }
         }
 
-        if (dataChannelReady) {
-          const threshold = Math.max(LOCAL_SPEECH_THRESHOLD, noiseFloor * 1.8 + LOCAL_NOISE_MARGIN);
+        const threshold = Math.max(vad.speechThreshold, noiseFloor * vad.noiseMultiplier + vad.noiseMargin);
+        callbacks.onVad?.({ level, noiseFloor, threshold, speechActive: turnDetectionMode === "semantic_vad" ? semanticSpeechActive : speechActive, calibrated: noiseCalibrated, lastCommitAt });
+
+        if (dataChannelReady && turnDetectionMode === "local_vad") {
           if (level >= threshold) {
             if (!speechCandidateSince) speechCandidateSince = timestamp;
-            if (!speechActive && timestamp - speechCandidateSince >= LOCAL_START_MS) {
+            if (!speechActive && timestamp - speechCandidateSince >= vad.startMs) {
               speechActive = true;
               speechStartedAt = speechCandidateSince;
+              lastVoiceAt = timestamp;
               callbacks.onStatus?.("connected", "Local VAD: speech detected");
+            } else if (speechActive && timestamp - speechCandidateSince >= vad.startMs) {
+              // Require the same debounce before refreshing the silence timer
+              // so a short noise spike cannot keep a turn open forever.
+              lastVoiceAt = timestamp;
             }
-            // Same LOCAL_START_MS debounce applies to *resuming* voice, not
-            // just starting it — otherwise a single stray noisy sample
-            // (100ms) during the silence countdown below resets it back to
-            // zero, and real ambient noise can keep doing that indefinitely,
-            // so the turn never ends on its own. Only a sustained re-entry
-            // counts as "still talking".
-            if (speechActive && timestamp - speechCandidateSince >= LOCAL_START_MS) lastVoiceAt = timestamp;
           } else {
             speechCandidateSince = 0;
-            if (speechActive && timestamp - lastVoiceAt >= LOCAL_SILENCE_MS) commitTurn(timestamp);
+            if (speechActive && timestamp - lastVoiceAt >= (vad.silenceMs ?? LOCAL_SILENCE_MS)) {
+              commitTurn(timestamp);
+            }
           }
-          // Silence-based end-of-turn detection depends on ambient noise
-          // staying close to the one-time calibration snapshot. If it
-          // doesn't, this forces the turn closed anyway instead of holding
-          // the buffer open indefinitely.
-          if (speechActive && speechStartedAt && timestamp - speechStartedAt >= LOCAL_MAX_SPEECH_MS) {
+          if (speechActive && speechStartedAt && timestamp - speechStartedAt >= vad.maxSpeechMs) {
             callbacks.onStatus?.("connected", "Local VAD: max speech length reached, forcing turn end");
             commitTurn(timestamp);
           }
+        } else if (dataChannelReady && turnDetectionMode === "semantic_vad" && semanticSpeechActive && semanticSpeechStartedAt && timestamp - semanticSpeechStartedAt >= vad.maxSpeechMs) {
+          callbacks.onStatus?.("connected", "Semantic VAD max speech length reached, forcing safety commit");
+          commitSemanticSafetyTurn(timestamp);
         } else {
           speechActive = false;
           speechStartedAt = 0;
@@ -277,6 +373,8 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
     speechStartedAt = 0;
     speechCandidateSince = 0;
     lastVoiceAt = 0;
+    semanticSpeechActive = false;
+    semanticSpeechStartedAt = 0;
     callbacks.onStatus?.("connected", "Transcription session ready");
     resolveReadyIfPossible();
   });
@@ -289,6 +387,18 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
   dataChannel.addEventListener("message", (message) => {
     try {
       const event = JSON.parse(message.data as string) as { type?: string; delta?: string; transcript?: string };
+      if (event.type === "input_audio_buffer.speech_started" && turnDetectionMode === "semantic_vad") {
+        semanticSpeechActive = true;
+        semanticSpeechStartedAt = performance.now();
+        callbacks.onVad?.({ level: 0, noiseFloor, threshold: Math.max(vad.speechThreshold, noiseFloor * vad.noiseMultiplier + vad.noiseMargin), speechActive: true, calibrated: noiseCalibrated, lastCommitAt });
+        callbacks.onStatus?.("connected", "Semantic VAD: speech started");
+      }
+      if (event.type === "input_audio_buffer.speech_stopped" && turnDetectionMode === "semantic_vad") {
+        semanticSpeechActive = false;
+        semanticSpeechStartedAt = 0;
+        callbacks.onVad?.({ level: 0, noiseFloor, threshold: Math.max(vad.speechThreshold, noiseFloor * vad.noiseMultiplier + vad.noiseMargin), speechActive: false, calibrated: noiseCalibrated, lastCommitAt });
+        callbacks.onStatus?.("connected", "Semantic VAD: speech stopped");
+      }
       if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
         callbacks.onDelta(event.delta);
       }
@@ -313,8 +423,11 @@ export async function startRealtimeTranscription(callbacks: RealtimeCallbacks, o
       signal,
     });
     if (!tokenResponse.ok) throw new Error(await formatSessionError(tokenResponse));
-    const tokenPayload = await tokenResponse.json() as { clientSecret?: string };
+    const tokenPayload = await tokenResponse.json() as { clientSecret?: string; turnDetection?: TurnDetectionMode };
     if (!tokenPayload.clientSecret) throw new Error("Realtime session did not return a client secret.");
+    turnDetectionMode = tokenPayload.turnDetection === "semantic_vad" ? "semantic_vad" : "local_vad";
+    callbacks.onTurnDetection?.(turnDetectionMode);
+    callbacks.onStatus?.("connecting", `Turn detection: ${turnDetectionMode}`);
     if (signal?.aborted) throw new RealtimeConnectionCancelledError();
 
     const offer = await peer.createOffer();

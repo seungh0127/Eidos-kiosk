@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSPr
 import { ROBOT_IDS } from "@eidos/shared";
 import type { AnalysisResult, KioskPhase, RobotCardOffset, RobotCardOffsets, RuntimeStatus } from "@eidos/shared";
 import { PresenceDetector, type CameraDevice, type FaceTelemetry } from "./presence";
-import { RealtimeConnectionCancelledError, startRealtimeTranscription, type RealtimeStop } from "./realtime";
+import { RealtimeConnectionCancelledError, startRealtimeTranscription, type RealtimeStop, type RealtimeVadConfig, type VadSnapshot } from "./realtime";
 import { TextAnimate } from "./registry/magicui/text-animate";
 import "./styles.css";
 
@@ -14,8 +14,9 @@ const DEBUG_PANEL = import.meta.env.VITE_EIDOS_DEBUG === "true" || import.meta.e
 const REQUEST_FINALIZE_DELAY_MS = 2000;
 const WAKE_HINT_DELAY_MS = 3500;
 const REQUEST_RETRY_TIMEOUT_MS = 15000;
-// Beat between "face detected" and the wake-listen hint text/animation
-// appearing — see introRevealed.
+const MIC_CALIBRATION_PHASE_MS = 7000;
+// Keep the original visual beat between "face detected" and the wake-listen
+// hint. The prompt is also gated by the Realtime-ready phase below.
 const INTRO_REVEAL_DELAY_MS = 1000;
 // Exit-fade duration once the reels finish holding on their result (matches
 // the .robot-loading-locked / robot-loading-out CSS animation).
@@ -143,7 +144,7 @@ const RESULT_GREETING_DELAY_MS = 1000;
 // concrete example request, then keep alternating between the two on
 // this same interval for as long as the visitor stays silent — see
 // RequestPrompt.
-const REQUEST_EXAMPLE_DELAY_MS = 5000;
+const REQUEST_EXAMPLE_DELAY_MS = 2500;
 // Each example's line break is fixed by design — keep as an array of lines
 // rather than a single string so RequestPrompt can render it with the same
 // <br /> structure as the default instruction.
@@ -207,6 +208,36 @@ type ResultPhotoStage = "card" | "greeting" | "photo-onboarding" | "photo-captur
 
 type DebugLog = { time: string; source: string; message: string };
 
+type MicCalibrationPhase = "idle" | "noise" | "voice" | "complete" | "error";
+type MicCalibrationState = {
+  phase: MicCalibrationPhase;
+  noiseFloor: number | null;
+  voiceFloor: number | null;
+  voicePeak: number | null;
+  suggestedThreshold: number | null;
+  message: string;
+};
+
+const INITIAL_MIC_CALIBRATION: MicCalibrationState = {
+  phase: "idle",
+  noiseFloor: null,
+  voiceFloor: null,
+  voicePeak: null,
+  suggestedThreshold: null,
+  message: "기본 VAD 설정을 사용 중입니다.",
+};
+
+function percentile(values: number[], fraction: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * fraction)));
+  return sorted[index] ?? 0;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 const INITIAL_FACE_TELEMETRY: FaceTelemetry = {
   camera: "disabled",
   detector: "idle",
@@ -239,7 +270,7 @@ function introVisualIntensity(phase: KioskPhase, stableMs: number, faceActive: b
   if (phase === "wake-listen") return 1;
   if (phase === "realtime-connecting") return 0.68;
   if (phase === "presence") return 0.34;
-  if (phase === "idle" && !faceActive) return Math.min(1, Math.max(0, stableMs / 800)) * 0.34;
+  if (phase === "idle" && !faceActive) return Math.min(1, Math.max(0, stableMs / 500)) * 0.34;
   return 0;
 }
 
@@ -343,6 +374,7 @@ export default function App() {
   const [robotCardOffsets, setRobotCardOffsets] = useState<RobotCardOffsets>(DEFAULT_ROBOT_CARD_OFFSETS);
   const [presenceStatus, setPresenceStatus] = useState("Starting camera");
   const [realtimeStatus, setRealtimeStatus] = useState("Not connected");
+  const [turnDetectionMode, setTurnDetectionMode] = useState<"unknown" | "semantic_vad" | "local_vad">("unknown");
   const [operatorOpen, setOperatorOpen] = useState(DEBUG_PANEL);
   const [screenRotated, setScreenRotated] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
@@ -368,6 +400,10 @@ export default function App() {
   const [exampleMorphTrigger, setExampleMorphTrigger] = useState(0);
   const [requestNotice, setRequestNotice] = useState("");
   const [micPaused, setMicPaused] = useState(false);
+  const [requestLockEnabled, setRequestLockEnabled] = useState(false);
+  const [requestTurnLocked, setRequestTurnLocked] = useState(false);
+  const [vadSnapshot, setVadSnapshot] = useState<VadSnapshot | null>(null);
+  const [micCalibration, setMicCalibration] = useState<MicCalibrationState>(INITIAL_MIC_CALIBRATION);
   const [debugLogs, setDebugLogs] = useState<DebugLog[]>([]);
   const [presenceResetToken, setPresenceResetToken] = useState(0);
   // Bumped on every resetToIdle() call so a keyed overlay remounts (and its
@@ -407,6 +443,17 @@ export default function App() {
   const phaseRef = useRef(phase);
   const requestRetryRef = useRef<(() => Promise<void>) | null>(null);
   const micPausedRef = useRef(false);
+  const requestLockEnabledRef = useRef(false);
+  const requestTurnLockedRef = useRef(false);
+  const vadOverrideRef = useRef<RealtimeVadConfig>({});
+  const micCalibrationPhaseRef = useRef<MicCalibrationPhase>("idle");
+  const micCalibrationTimerRef = useRef<number | null>(null);
+  const micCalibrationRunRef = useRef(0);
+  const micCalibrationDeadlineRef = useRef(0);
+  const micCalibrationPhaseStartedAtRef = useRef(0);
+  const calibrationNoiseLevelsRef = useRef<number[]>([]);
+  const calibrationVoiceLevelsRef = useRef<number[]>([]);
+  const lastVadCommitRef = useRef<number | null>(null);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -435,6 +482,19 @@ export default function App() {
     setDebugLogs((previous) => [...previous.slice(-199), { time: new Date().toLocaleTimeString("ko-KR", { hour12: false }), source, message }]);
   }, []);
 
+  const handleVadSnapshot = useCallback((snapshot: VadSnapshot) => {
+    setVadSnapshot(snapshot);
+    if (snapshot.lastCommitAt !== null && snapshot.lastCommitAt !== lastVadCommitRef.current) {
+      lastVadCommitRef.current = snapshot.lastCommitAt;
+      appendDebugLog("realtime", `Turn boundary committed · level ${snapshot.level.toFixed(3)} · threshold ${snapshot.threshold.toFixed(3)}`);
+    }
+  }, [appendDebugLog]);
+
+  const handleTurnDetection = useCallback((mode: "semantic_vad" | "local_vad") => {
+    setTurnDetectionMode(mode);
+    appendDebugLog("realtime", `Turn detection selected: ${mode}`);
+  }, [appendDebugLog]);
+
   const playSound = useCallback((key: SoundKey) => {
     const audio = soundRefs.current[key];
     if (!audio) return;
@@ -460,6 +520,7 @@ export default function App() {
     if (loadingResultTimerRef.current) window.clearTimeout(loadingResultTimerRef.current);
     if (resultStageTimerRef.current) window.clearTimeout(resultStageTimerRef.current);
     if (introRevealTimerRef.current) window.clearTimeout(introRevealTimerRef.current);
+    if (micCalibrationTimerRef.current) window.clearTimeout(micCalibrationTimerRef.current);
     requestTimerRef.current = null;
     mockTranscriptionTimerRef.current = null;
     wakeTimeoutRef.current = null;
@@ -469,6 +530,10 @@ export default function App() {
     loadingRevealTimerRef.current = null;
     loadingResultTimerRef.current = null;
     resultStageTimerRef.current = null;
+    micCalibrationTimerRef.current = null;
+    micCalibrationRunRef.current += 1;
+    micCalibrationDeadlineRef.current = 0;
+    micCalibrationPhaseStartedAtRef.current = 0;
   }, []);
 
   // Tears down only the realtime mic/data connection, without touching any
@@ -496,6 +561,7 @@ export default function App() {
     sessionStartedAtRef.current = "";
     partialRef.current = "";
     requestRef.current = "";
+    requestTurnLockedRef.current = false;
     wakeDetectedRef.current = false;
     analysisStartedRef.current = false;
     eidosSoundPlayedRef.current = false;
@@ -507,7 +573,18 @@ export default function App() {
     setRequestPromptVisible(false);
     setRequestNotice("");
     setMicLevel(0);
+    setRequestTurnLocked(false);
+    setVadSnapshot(null);
+    if (micCalibrationPhaseRef.current === "noise" || micCalibrationPhaseRef.current === "voice") {
+      if (micCalibrationTimerRef.current) window.clearTimeout(micCalibrationTimerRef.current);
+      micCalibrationTimerRef.current = null;
+      calibrationNoiseLevelsRef.current = [];
+      calibrationVoiceLevelsRef.current = [];
+      micCalibrationPhaseRef.current = "idle";
+      setMicCalibration((previous) => ({ ...previous, phase: "idle", message: "보정이 취소되었습니다. 기본값 또는 직전 완료값을 사용합니다." }));
+    }
     setRealtimeStatus(rearmPresence ? "reset: waiting for face re-arm" : "auto reset: waiting for visitor exit");
+    setTurnDetectionMode("unknown");
     if (rearmPresence) {
       setPresenceResetToken((token) => token + 1);
       appendDebugLog("state", "Force reset → idle; face tracking re-armed");
@@ -531,8 +608,11 @@ export default function App() {
   }, [appendDebugLog, resetToIdle]);
 
   const showError = useCallback((message: string) => {
-    appendDebugLog("state", `Error suppressed, returning to idle: ${message}`);
-    resetToIdle();
+    appendDebugLog("state", `Realtime error → idle; waiting for visitor exit: ${message}`);
+    // Do not re-arm face presence while the same visitor is still in frame.
+    // Otherwise a failed client-secret request immediately starts another
+    // microphone session and appears as a refresh/retry loop.
+    resetToIdle(false);
   }, [appendDebugLog, resetToIdle]);
 
   // Drives the request-listen "no speech heard" timeout. A visitor who is
@@ -585,6 +665,125 @@ export default function App() {
     }
   }, [appendDebugLog, handleWakeTimeout, scheduleRequestTimeout]);
 
+  const finishMicCalibration = useCallback((runId: number) => {
+    if (runId !== micCalibrationRunRef.current || micCalibrationPhaseRef.current !== "voice") return;
+    const remainingMs = micCalibrationDeadlineRef.current - performance.now();
+    if (remainingMs > 0) {
+      // A stale/early timer must never shorten the voice window. Re-arm from
+      // the absolute deadline rather than trusting the original timeout.
+      micCalibrationTimerRef.current = window.setTimeout(() => finishMicCalibration(runId), Math.ceil(remainingMs) + 20);
+      return;
+    }
+    micCalibrationTimerRef.current = null;
+    const voiceElapsedMs = performance.now() - micCalibrationPhaseStartedAtRef.current;
+    const noiseSamples = calibrationNoiseLevelsRef.current;
+    const voiceSamples = calibrationVoiceLevelsRef.current;
+    // Treat short ambient bursts as part of the real noise environment. A
+    // quiet average is too optimistic for an exhibition hall.
+    const noiseFloor = percentile(noiseSamples, 0.95);
+    // The visitor should keep speaking during the full voice window. Using a
+    // middle percentile makes a one-off loud sample insufficient to pass.
+    const voiceFloor = percentile(voiceSamples, 0.35);
+    const voicePeak = percentile(voiceSamples, 0.95);
+    const separation = voiceFloor - noiseFloor;
+
+    if (noiseSamples.length < 20 || voiceSamples.length < 20 || separation < 0.02) {
+      micCalibrationPhaseRef.current = "error";
+      setMicCalibration({
+        phase: "error",
+        noiseFloor,
+        voiceFloor,
+        voicePeak,
+        suggestedThreshold: null,
+        message: "소음과 테스트 발화를 충분히 구분하지 못했습니다. 주변 소리가 줄어든 뒤 7초 동안 계속 말하며 다시 시도해주세요.",
+      });
+      appendDebugLog("operator", `Mic calibration failed · voice window ${Math.round(voiceElapsedMs)}ms · noise ${noiseFloor.toFixed(3)} · voice ${voiceFloor.toFixed(3)}`);
+      return;
+    }
+
+    const suggestedThreshold = clampNumber(noiseFloor + Math.max(0.035, separation * 0.45), 0.08, 0.32);
+    vadOverrideRef.current = {
+      speechThreshold: suggestedThreshold,
+      noiseMultiplier: 1.25,
+      noiseMargin: 0.02,
+      startMs: 320,
+    };
+    micCalibrationPhaseRef.current = "complete";
+    setMicCalibration({
+      phase: "complete",
+      noiseFloor,
+      voiceFloor,
+      voicePeak,
+      suggestedThreshold,
+      message: "보정 완료. 다음 Realtime 연결부터 적용됩니다.",
+    });
+    appendDebugLog("operator", `Mic calibration complete · voice window ${Math.round(voiceElapsedMs)}ms · threshold ${suggestedThreshold.toFixed(3)} · applies next Realtime connection`);
+  }, [appendDebugLog]);
+
+  const startMicCalibration = useCallback(() => {
+    if (micPausedRef.current) {
+      setMicCalibration((previous) => ({ ...previous, phase: "error", message: "먼저 마이크 일시정지를 해제해주세요." }));
+      appendDebugLog("operator", "Mic calibration blocked while microphone is paused");
+      return;
+    }
+    if (!realtimeStopRef.current || micCalibrationPhaseRef.current === "noise" || micCalibrationPhaseRef.current === "voice") {
+      if (!realtimeStopRef.current) {
+        setMicCalibration((previous) => ({ ...previous, phase: "error", message: "활성 Realtime 연결이 있을 때 보정을 시작할 수 있습니다." }));
+        appendDebugLog("operator", "Mic calibration blocked · Realtime is not connected");
+      }
+      return;
+    }
+
+    calibrationNoiseLevelsRef.current = [];
+    calibrationVoiceLevelsRef.current = [];
+    const runId = micCalibrationRunRef.current + 1;
+    micCalibrationRunRef.current = runId;
+    micCalibrationPhaseRef.current = "noise";
+    const noiseStartedAt = performance.now();
+    micCalibrationPhaseStartedAtRef.current = noiseStartedAt;
+    micCalibrationDeadlineRef.current = noiseStartedAt + MIC_CALIBRATION_PHASE_MS;
+    setMicCalibration({ ...INITIAL_MIC_CALIBRATION, phase: "noise", message: `${MIC_CALIBRATION_PHASE_MS / 1000}초간 주변 소음을 측정합니다. 조용히 있어주세요.` });
+    appendDebugLog("operator", `Mic calibration started · noise window ${MIC_CALIBRATION_PHASE_MS}ms`);
+
+    const beginVoicePhase = () => {
+      if (runId !== micCalibrationRunRef.current || micCalibrationPhaseRef.current !== "noise") return;
+      const remainingMs = micCalibrationDeadlineRef.current - performance.now();
+      if (remainingMs > 0) {
+        micCalibrationTimerRef.current = window.setTimeout(beginVoicePhase, Math.ceil(remainingMs) + 20);
+        return;
+      }
+      const voiceStartedAt = performance.now();
+      micCalibrationPhaseRef.current = "voice";
+      micCalibrationPhaseStartedAtRef.current = voiceStartedAt;
+      micCalibrationDeadlineRef.current = voiceStartedAt + MIC_CALIBRATION_PHASE_MS;
+      setMicCalibration((previous) => ({ ...previous, phase: "voice", message: `이제 마이크에 대고 ${MIC_CALIBRATION_PHASE_MS / 1000}초 동안 계속 말해주세요.` }));
+      appendDebugLog("operator", `Mic calibration · voice window started ${MIC_CALIBRATION_PHASE_MS}ms`);
+      micCalibrationTimerRef.current = window.setTimeout(() => finishMicCalibration(runId), MIC_CALIBRATION_PHASE_MS);
+    };
+    micCalibrationTimerRef.current = window.setTimeout(beginVoicePhase, MIC_CALIBRATION_PHASE_MS);
+  }, [appendDebugLog, finishMicCalibration]);
+
+  const resetMicCalibration = useCallback(() => {
+    if (micCalibrationTimerRef.current) window.clearTimeout(micCalibrationTimerRef.current);
+    micCalibrationTimerRef.current = null;
+    micCalibrationRunRef.current += 1;
+    micCalibrationDeadlineRef.current = 0;
+    micCalibrationPhaseStartedAtRef.current = 0;
+    calibrationNoiseLevelsRef.current = [];
+    calibrationVoiceLevelsRef.current = [];
+    micCalibrationPhaseRef.current = "idle";
+    vadOverrideRef.current = {};
+    setMicCalibration(INITIAL_MIC_CALIBRATION);
+    appendDebugLog("operator", "Mic tuning restored to default");
+  }, [appendDebugLog]);
+
+  const toggleRequestLock = useCallback(() => {
+    const next = !requestLockEnabledRef.current;
+    requestLockEnabledRef.current = next;
+    setRequestLockEnabled(next);
+    appendDebugLog("operator", `Request speech lock ${next ? "enabled" : "disabled"} · applies to the next completed request`);
+  }, [appendDebugLog]);
+
   const resetCounter = useCallback(async (): Promise<string> => {
     if (MOCK) {
       setRuntime((previous) => ({ ...(previous ?? MOCK_RUNTIME_STATUS), counter: 0 }));
@@ -623,15 +822,28 @@ export default function App() {
     if (normalized === "mic status" || normalized === "microphone status") {
       return micPausedRef.current ? "Microphone paused" : `Microphone ${realtimeStopRef.current ? "active" : "not connected"}`;
     }
+    if (normalized === "request lock on" || normalized === "speech lock on" || normalized === "발화 잠금 켜기") {
+      if (!requestLockEnabledRef.current) toggleRequestLock();
+      return "Request speech lock enabled";
+    }
+    if (normalized === "request lock off" || normalized === "speech lock off" || normalized === "발화 잠금 끄기") {
+      if (requestLockEnabledRef.current) toggleRequestLock();
+      return "Request speech lock disabled";
+    }
+    if (normalized === "request lock status" || normalized === "speech lock status") {
+      return requestLockEnabledRef.current ? `Request speech lock ON${requestTurnLockedRef.current ? " · current request frozen" : ""}` : "Request speech lock OFF";
+    }
     if (normalized === "counter status") return `Counter Soma ${String(runtime?.counter ?? 0).padStart(3, "0")}`;
     if (normalized === "counter reset") return "Confirmation required: /counter reset confirm";
     if (normalized === "counter reset confirm") return resetCounter();
     appendDebugLog("operator", `Unknown command: ${command.trim() || "(empty)"}`);
     return "Unknown command. Try the quick controls or /counter reset confirm";
-  }, [appendDebugLog, pauseMic, resetCounter, resumeMic, runtime?.counter]);
+  }, [appendDebugLog, pauseMic, resetCounter, resumeMic, runtime?.counter, toggleRequestLock]);
 
   const handleAudioLevel = useCallback((level: number) => {
     setMicLevel(level);
+    if (micCalibrationPhaseRef.current === "noise") calibrationNoiseLevelsRef.current.push(level);
+    if (micCalibrationPhaseRef.current === "voice") calibrationVoiceLevelsRef.current.push(level);
     if (phaseRef.current !== "wake-listen" || wakeDetectedRef.current || wakePromptAttention || wakeHintTimerRef.current !== null || level < 0.03) return;
     wakeHintTimerRef.current = window.setTimeout(() => {
       wakeHintTimerRef.current = null;
@@ -654,6 +866,8 @@ export default function App() {
       analysisStartedRef.current = false;
       partialRef.current = "";
       requestRef.current = "";
+      requestTurnLockedRef.current = false;
+      setRequestTurnLocked(false);
       setRequestText("");
       setTranscript("");
       setRequestNotice("죄송합니다.\n다시 말씀해주세요.");
@@ -812,6 +1026,8 @@ export default function App() {
   }, [appendDebugLog, playSoundOnce, scheduleRequestTimeout]);
 
   const handleTranscriptDelta = useCallback((delta: string) => {
+    if (micCalibrationPhaseRef.current === "noise" || micCalibrationPhaseRef.current === "voice") return;
+    if (requestTurnLockedRef.current) return;
     partialRef.current += delta;
     const current = partialRef.current;
     const wake = extractWakeRequest(current);
@@ -835,6 +1051,11 @@ export default function App() {
   }, [appendDebugLog, markWake]);
 
   const handleTranscriptCompleted = useCallback((completed: string) => {
+    if (micCalibrationPhaseRef.current === "noise" || micCalibrationPhaseRef.current === "voice") return;
+    if (requestTurnLockedRef.current) {
+      appendDebugLog("transcribe", `Ignored completed turn while speech lock is active: ${completed}`);
+      return;
+    }
     partialRef.current = "";
     appendDebugLog("transcribe", `Completed: ${completed}`);
     const wake = extractWakeRequest(completed);
@@ -856,7 +1077,13 @@ export default function App() {
     requestTimerRef.current = nextText
       ? window.setTimeout(() => void submitAnalysis(requestRef.current), REQUEST_FINALIZE_DELAY_MS)
       : null;
-  }, [appendDebugLog, markWake, playSoundOnce, submitAnalysis]);
+    if (nextText && requestLockEnabledRef.current) {
+      requestTurnLockedRef.current = true;
+      setRequestTurnLocked(true);
+      appendDebugLog("operator", "Request speech lock engaged · first completed request frozen");
+      stopRealtimeConnection();
+    }
+  }, [appendDebugLog, markWake, playSoundOnce, stopRealtimeConnection, submitAnalysis]);
 
   const startRequestRetry = useCallback(async () => {
     if (MOCK) {
@@ -879,7 +1106,9 @@ export default function App() {
           appendDebugLog("realtime", nextStatus);
         },
         onAudioLevel: handleAudioLevel,
-      }, { signal: abortController.signal });
+        onVad: handleVadSnapshot,
+        onTurnDetection: handleTurnDetection,
+      }, { signal: abortController.signal, vad: vadOverrideRef.current });
       if (attempt !== realtimeAttemptRef.current || abortController.signal.aborted) {
         stop();
         return;
@@ -896,7 +1125,7 @@ export default function App() {
     } finally {
       if (realtimeAttemptRef.current === attempt) realtimeAbortRef.current = null;
     }
-  }, [appendDebugLog, handleAudioLevel, handleTranscriptCompleted, handleTranscriptDelta, scheduleRequestTimeout, showError]);
+  }, [appendDebugLog, handleAudioLevel, handleTranscriptCompleted, handleTranscriptDelta, handleTurnDetection, handleVadSnapshot, scheduleRequestTimeout, showError]);
 
   useEffect(() => {
     requestRetryRef.current = startRequestRetry;
@@ -912,6 +1141,7 @@ export default function App() {
     wakeDetectedRef.current = false;
     partialRef.current = "";
     requestRef.current = "";
+    requestTurnLockedRef.current = false;
     analysisStartedRef.current = false;
     transcriptionLoggedRef.current = false;
     requestSoundPlayedRef.current = false;
@@ -921,6 +1151,8 @@ export default function App() {
     setRequestPromptVisible(false);
     setRequestNotice("");
     setMicLevel(0);
+    setRequestTurnLocked(false);
+    setVadSnapshot(null);
     appendDebugLog("state", "Visitor detected → starting Realtime");
     setTranscript("");
     setRequestText("");
@@ -951,7 +1183,9 @@ export default function App() {
           appendDebugLog("realtime", nextStatus);
         },
         onAudioLevel: handleAudioLevel,
-      }, { signal: abortController.signal });
+        onVad: handleVadSnapshot,
+        onTurnDetection: handleTurnDetection,
+      }, { signal: abortController.signal, vad: vadOverrideRef.current });
       if (attempt !== realtimeAttemptRef.current || abortController.signal.aborted) {
         stop();
         return;
@@ -973,7 +1207,7 @@ export default function App() {
     } finally {
       if (realtimeAttemptRef.current === attempt) realtimeAbortRef.current = null;
     }
-  }, [appendDebugLog, handleAudioLevel, handleTranscriptCompleted, handleTranscriptDelta, handleWakeTimeout, phase, showError]);
+  }, [appendDebugLog, handleAudioLevel, handleTranscriptCompleted, handleTranscriptDelta, handleTurnDetection, handleVadSnapshot, handleWakeTimeout, phase, showError]);
 
   const startGreetingListen = useCallback(async () => {
     if (MOCK) return; // Mock testing uses the "Wave with open hand" control instead of a live mic.
@@ -992,7 +1226,9 @@ export default function App() {
           appendDebugLog("realtime", nextStatus);
         },
         onAudioLevel: handleAudioLevel,
-      }, { signal: abortController.signal });
+        onVad: handleVadSnapshot,
+        onTurnDetection: handleTurnDetection,
+      }, { signal: abortController.signal, vad: vadOverrideRef.current });
       if (attempt !== realtimeAttemptRef.current || abortController.signal.aborted) {
         stop();
         return;
@@ -1004,7 +1240,7 @@ export default function App() {
     } finally {
       if (realtimeAttemptRef.current === attempt) realtimeAbortRef.current = null;
     }
-  }, [appendDebugLog, handleAudioLevel, handleGreetingCompleted, handleGreetingDelta]);
+  }, [appendDebugLog, handleAudioLevel, handleGreetingCompleted, handleGreetingDelta, handleTurnDetection, handleVadSnapshot]);
 
   useEffect(() => {
     if (MOCK || phase !== "result" || resultPhotoStage !== "greeting") return undefined;
@@ -1053,9 +1289,15 @@ export default function App() {
       }
       return;
     }
+    if (micCalibrationPhaseRef.current === "noise" || micCalibrationPhaseRef.current === "voice") {
+      // Calibration is an operator-owned two-phase measurement. Do not let
+      // a transient face-detector miss cancel either measurement window.
+      appendDebugLog("operator", "Face presence lost during mic calibration · keeping measurement active");
+      return;
+    }
     if (phase === "result" || phase === "error" || phase === "wait-for-exit") resetToIdle();
     else if (phase !== "idle" && phase !== "boot") resetToIdle();
-  }, [phase, resetToIdle, startSession]);
+  }, [appendDebugLog, phase, resetToIdle, startSession]);
 
   useEffect(() => {
     if (MOCK) {
@@ -1115,6 +1357,7 @@ export default function App() {
     analysisStartedRef.current = false;
     partialRef.current = "";
     requestRef.current = "";
+    requestTurnLockedRef.current = false;
     transcriptionLoggedRef.current = false;
     requestSoundPlayedRef.current = false;
     wakeDetectedRef.current = true;
@@ -1122,6 +1365,7 @@ export default function App() {
     setWakePromptAttention(false);
     setRequestPromptVisible(false);
     setRequestNotice("");
+    setRequestTurnLocked(false);
     setResult(null);
     setLoadingLocked(false);
     setError("");
@@ -1185,7 +1429,7 @@ export default function App() {
       {resetFadeKey > 0 && <div key={resetFadeKey} className="reset-fade" aria-hidden="true" />}
       <PresenceDetector mock={MOCK} enabled={phase !== "boot"} diagnostic={(operatorOpen || MOCK) && !photoStageActive} resetToken={presenceResetToken} cameraDeviceId={cameraDeviceId} handDetectionEnabled={MOCK || phase === "analyzing" || phase === "result"} handWaveEnabled={phase === "result" && resultPhotoStage === "greeting"} minFaceAreaRatio={photoStageActive ? 0.01 : undefined} presenceAbsentMs={photoCaptureActive ? 3000 : photoOnboardingActive ? 8000 : undefined} onPresence={handlePresence} onHandWave={handleHandWave} onStatus={handlePresenceStatus} onTelemetry={handleFaceTelemetry} onDevices={handleCameraDevices} onStream={setCameraStream} />
       {phase === "boot" && <section className="screen screen-center"><p className="eyebrow">EIDOS</p><h1>Preparing the experience</h1></section>}
-      {(phase === "idle" || phase === "presence" || phase === "realtime-connecting" || phase === "wake-listen" || phase === "request-listen") && <WelcomeScreen mode={phase === "request-listen" ? "request" : "prompt"} visualState={phase} initial={phase === "idle"} ready={introRevealed && phase !== "request-listen"} intensity={introIntensity} wakePromptAttention={phase === "wake-listen" && wakePromptAttention} requestPromptVisible={requestPromptVisible} requestNotice={phase === "request-listen" ? requestNotice : ""} requestText={requestText} micLevel={phase === "wake-listen" || phase === "request-listen" ? micLevel : 0} exampleMorphTrigger={exampleMorphTrigger} />}
+      {(phase === "idle" || phase === "presence" || phase === "realtime-connecting" || phase === "wake-listen" || phase === "request-listen") && <WelcomeScreen mode={phase === "request-listen" ? "request" : "prompt"} visualState={phase} initial={phase === "idle"} ready={introRevealed && phase === "wake-listen"} intensity={introIntensity} wakePromptAttention={phase === "wake-listen" && wakePromptAttention} requestPromptVisible={requestPromptVisible} requestNotice={phase === "request-listen" ? requestNotice : ""} requestText={requestText} micLevel={phase === "wake-listen" || phase === "request-listen" ? micLevel : 0} exampleMorphTrigger={exampleMorphTrigger} />}
       {phase === "analyzing" && <RobotLoadingScreen locked={loadingLocked} robotId={result?.robotId ?? null} />}
       {phase === "result" && result && <ResultScreen result={result} photoStage={resultPhotoStage} cameraStream={cameraStream} mock={MOCK} robotCardOffset={robotCardOffsetFor(robotCardOffsets, result.robotId)} />}
 
@@ -1205,7 +1449,7 @@ export default function App() {
         status={`${phase} · ${runtime?.counter ?? 0} · ${presenceStatus} · ${realtimeStatus}`}
       />}
 
-      {operatorOpen && <DiagnosticPanel phase={phase} runtime={runtime} presenceStatus={presenceStatus} realtimeStatus={realtimeStatus} faceTelemetry={faceTelemetry} micLevel={micLevel} micPaused={micPaused} wakeDetected={wakeDetected} transcript={transcript} requestText={requestText} logs={debugLogs} sessions={operatorSessions} cameraDevices={cameraDevices} cameraDeviceId={cameraDeviceId} onCameraDeviceChange={handleCameraDeviceChange} screenRotated={screenRotated} onToggleScreenRotation={() => setScreenRotated((value) => !value)} onClose={() => setOperatorOpen(false)} onReset={resetToIdle} onExport={() => downloadSessions(operatorSessions)} onGallery={() => window.location.assign("?mock&gallery")} onCommand={handleOperatorCommand} onCounterReset={resetCounter} />}
+      {operatorOpen && <DiagnosticPanel phase={phase} runtime={runtime} presenceStatus={presenceStatus} realtimeStatus={realtimeStatus} turnDetectionMode={turnDetectionMode} faceTelemetry={faceTelemetry} micLevel={micLevel} micPaused={micPaused} vadSnapshot={vadSnapshot} micCalibration={micCalibration} requestLockEnabled={requestLockEnabled} requestTurnLocked={requestTurnLocked} wakeDetected={wakeDetected} transcript={transcript} requestText={requestText} logs={debugLogs} sessions={operatorSessions} cameraDevices={cameraDevices} cameraDeviceId={cameraDeviceId} onCameraDeviceChange={handleCameraDeviceChange} screenRotated={screenRotated} onToggleScreenRotation={() => setScreenRotated((value) => !value)} onClose={() => setOperatorOpen(false)} onReset={resetToIdle} onExport={() => downloadSessions(operatorSessions)} onGallery={() => window.location.assign("?mock&gallery")} onCommand={handleOperatorCommand} onCounterReset={resetCounter} onToggleRequestLock={toggleRequestLock} onStartMicCalibration={startMicCalibration} onResetMicCalibration={resetMicCalibration} />}
       {!MOCK && <div className="production-status" aria-hidden="true">{runtime?.assetsReady ? "" : "Media pending"}</div>}
     </main>
   );
@@ -1225,9 +1469,14 @@ function DiagnosticPanel({
   runtime,
   presenceStatus,
   realtimeStatus,
+  turnDetectionMode,
   faceTelemetry,
   micLevel,
   micPaused,
+  vadSnapshot,
+  micCalibration,
+  requestLockEnabled,
+  requestTurnLocked,
   wakeDetected,
   transcript,
   requestText,
@@ -1239,6 +1488,9 @@ function DiagnosticPanel({
   onGallery,
   onCommand,
   onCounterReset,
+  onToggleRequestLock,
+  onStartMicCalibration,
+  onResetMicCalibration,
   screenRotated,
   onToggleScreenRotation,
   cameraDevices,
@@ -1249,9 +1501,14 @@ function DiagnosticPanel({
   runtime: RuntimeStatus | null;
   presenceStatus: string;
   realtimeStatus: string;
+  turnDetectionMode: "unknown" | "semantic_vad" | "local_vad";
   faceTelemetry: FaceTelemetry;
   micLevel: number;
   micPaused: boolean;
+  vadSnapshot: VadSnapshot | null;
+  micCalibration: MicCalibrationState;
+  requestLockEnabled: boolean;
+  requestTurnLocked: boolean;
   wakeDetected: boolean;
   transcript: string;
   requestText: string;
@@ -1263,6 +1520,9 @@ function DiagnosticPanel({
   onGallery: () => void;
   onCommand: (command: string) => Promise<string>;
   onCounterReset: () => Promise<string>;
+  onToggleRequestLock: () => void;
+  onStartMicCalibration: () => void;
+  onResetMicCalibration: () => void;
   screenRotated: boolean;
   onToggleScreenRotation: () => void;
   cameraDevices: CameraDevice[];
@@ -1282,7 +1542,7 @@ function DiagnosticPanel({
     runOperatorCommand(command);
     setCommand("");
   };
-  return <aside className="diagnostic-panel" aria-label="Eidos development monitor">
+  return <aside className="diagnostic-panel" aria-label="Eidos development monitor"><div className="diagnostic-panel-content">
     <div className="diagnostic-header"><div><strong>EIDOS DEV MONITOR</strong><span>Live camera · microphone · transcription</span></div><div className="diagnostic-header-actions"><button type="button" onClick={onToggleScreenRotation} aria-pressed={screenRotated}>{screenRotated ? "Reset 0°" : "Rotate 90°"}</button><button type="button" onClick={onClose}>Hide</button></div></div>
 
     <section className="diagnostic-section diagnostic-state">
@@ -1299,7 +1559,7 @@ function DiagnosticPanel({
       <div className="diagnostic-row"><span>Presence</span><strong className={faceTelemetry.active ? "status-good" : "status-idle"}>{faceTelemetry.active ? "FACE CONFIRMED" : "waiting"}</strong></div>
       <label className="diagnostic-camera-select">Camera device<select value={cameraDeviceId} onChange={(event) => onCameraDeviceChange(event.target.value)}><option value="">Auto · external preferred</option>{cameraDevices.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>)}</select></label>
       <div className="diagnostic-grid"><span>Faces <b>{faceTelemetry.faceCount}</b></span><span>Confidence <b>{faceTelemetry.confidence.toFixed(2)}</b></span><span>Area <b>{(faceTelemetry.areaRatio * 100).toFixed(1)}%</b></span><span>Stable <b>{(faceTelemetry.stableMs / 1000).toFixed(1)}s</b></span><span>Absent <b>{(faceTelemetry.absentMs / 1000).toFixed(1)}s</b></span></div>
-      <small className="diagnostic-muted">threshold: confidence ≥ .65 · area ≥ 2.0% · stable ≥ .8s<br />{presenceStatus} · last frame {faceTelemetry.lastFrameAt}</small>
+      <small className="diagnostic-muted">threshold: confidence ≥ .65 · area ≥ 2.0% · stable ≥ .5s<br />{presenceStatus} · last frame {faceTelemetry.lastFrameAt}</small>
     </section>
 
     <section className="diagnostic-section">
@@ -1313,8 +1573,22 @@ function DiagnosticPanel({
       <div className="diagnostic-kicker">MICROPHONE / REALTIME</div>
       <div className="diagnostic-row"><span>Realtime</span><strong className={realtimeStatus.startsWith("connected") ? "status-good" : "status-idle"}>{realtimeStatus}</strong></div>
       <div className="diagnostic-row"><span>Model</span><strong>{runtime?.models.transcription ?? "gpt-live-transcribe"}</strong></div>
+      <div className="diagnostic-row"><span>Turn detection</span><strong>{turnDetectionMode === "semantic_vad" ? "semantic_vad · medium" : turnDetectionMode === "local_vad" ? "local_vad · 1s silence" : "pending"}</strong></div>
       <div className="mic-meter"><span style={{ width: `${signalPercent}%` }} /></div>
       <div className="diagnostic-row"><span>Input level</span><strong className={signalPercent > 1 ? "status-good" : "status-idle"}>{signalPercent}% · {signalPercent > 1 ? "signal received" : "silence / waiting"}</strong></div>
+      <div className="diagnostic-grid"><span>Noise floor <b>{vadSnapshot ? vadSnapshot.noiseFloor.toFixed(3) : "—"}</b></span><span>Local threshold <b>{vadSnapshot ? vadSnapshot.threshold.toFixed(3) : "—"}</b></span><span>Local VAD <b className={vadSnapshot?.speechActive ? "status-good" : "status-idle"}>{vadSnapshot?.speechActive ? "SPEECH" : "quiet"}</b></span><span>Calibration <b>{vadSnapshot?.calibrated ? "ready" : "warming"}</b></span></div>
+    </section>
+
+    <section className="diagnostic-section diagnostic-experimental">
+      <div className="diagnostic-kicker">FIELD TEST MODES</div>
+      <div className="diagnostic-row"><span>발화 잠금</span><strong className={requestLockEnabled ? "status-good" : "status-idle"}>{requestLockEnabled ? (requestTurnLocked ? "ON · CURRENT FROZEN" : "ON") : "OFF · DEFAULT"}</strong></div>
+      <div className="operator-actions">
+        <button type="button" className={requestLockEnabled ? "operator-mode-on" : ""} onClick={onToggleRequestLock}>{requestLockEnabled ? "발화 잠금 끄기" : "발화 잠금 켜기"}</button>
+        <button type="button" onClick={onStartMicCalibration} disabled={micCalibration.phase === "noise" || micCalibration.phase === "voice" || micPaused}>{micCalibration.phase === "noise" ? "소음 측정 중…" : micCalibration.phase === "voice" ? "테스트 발화 중…" : "마이크 재보정 시작"}</button>
+      </div>
+      <div className="diagnostic-grid"><span>Ambient <b>{micCalibration.noiseFloor === null ? "—" : micCalibration.noiseFloor.toFixed(3)}</b></span><span>Voice <b>{micCalibration.voiceFloor === null ? "—" : micCalibration.voiceFloor.toFixed(3)}</b></span><span>Peak <b>{micCalibration.voicePeak === null ? "—" : micCalibration.voicePeak.toFixed(3)}</b></span><span>New threshold <b>{micCalibration.suggestedThreshold === null ? "—" : micCalibration.suggestedThreshold.toFixed(3)}</b></span></div>
+      <small className="diagnostic-muted">{micCalibration.message}<br />보정값은 다음 Realtime 연결부터 적용되며 새로고침하면 기본값으로 돌아갑니다.</small>
+      <button type="button" onClick={onResetMicCalibration}>마이크 기본값 복원</button>
     </section>
 
     <section className={`diagnostic-section wake-status ${wakeDetected ? "wake-detected" : ""}`}>
@@ -1366,7 +1640,7 @@ function DiagnosticPanel({
       <h2>Recent sessions ({sessions.length})</h2>
       <div className="operator-log">{sessions.slice(0, 8).map((session) => <div key={String(session.id)}><strong>{String(session.status)}</strong><span>{String(session.title ?? session.error ?? session.transcript ?? "")}</span></div>)}</div>
     </section>
-  </aside>;
+  </div></aside>;
 }
 
 function MockPanel({ mockRequest, onMockRequestChange, onWake, onPreviewTranscription, onAnalyze, onAnalyzeFail, onReset, onGallery, onPhotoWave, requestPromptVisible, onRequestPromptVisibleChange, onPreviewExampleMorph, status }: {

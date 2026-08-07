@@ -79,7 +79,7 @@ app.post("/api/realtime/session", async (req, res) => {
   if (config.mockMode) return res.status(204).end();
   if (!config.openAiApiKey) return res.status(503).json({ error: "OpenAI API key is not configured." });
 
-  const sessionConfig = {
+  const baseSessionConfig = {
     type: "transcription",
     audio: {
       input: {
@@ -90,6 +90,27 @@ app.post("/api/realtime/session", async (req, res) => {
           keywords: ["Eidos", "에이도스"],
           delay: "low",
         },
+      },
+    },
+  };
+  const semanticSessionConfig = {
+    ...baseSessionConfig,
+    audio: {
+      ...baseSessionConfig.audio,
+      input: {
+        ...baseSessionConfig.audio.input,
+        turn_detection: { type: "semantic_vad", eagerness: "medium" },
+      },
+    },
+  };
+  const localSessionConfig = {
+    ...baseSessionConfig,
+    audio: {
+      ...baseSessionConfig.audio,
+      input: {
+        ...baseSessionConfig.audio.input,
+        // The browser Local VAD commits each turn explicitly after a
+        // calibrated silence interval.
         turn_detection: null,
       },
     },
@@ -105,26 +126,67 @@ app.post("/api/realtime/session", async (req, res) => {
   res.on("close", abortIfClientDisconnects);
 
   try {
-    const upstream = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+    let selectedTurnDetection: "semantic_vad" | "local_vad" = "semantic_vad";
+    let upstream = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.openAiApiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ session: sessionConfig }),
+      body: JSON.stringify({ session: semanticSessionConfig }),
       signal: controller.signal,
     });
-    const responseText = await upstream.text();
-    const elapsedMs = Date.now() - started;
-    const requestId = upstream.headers.get("x-request-id") ?? upstream.headers.get("x-openai-request-id") ?? "";
+    let responseText = await upstream.text();
+    let elapsedMs = Date.now() - started;
+    let requestId = upstream.headers.get("x-request-id") ?? upstream.headers.get("x-openai-request-id") ?? "";
     const contentType = upstream.headers.get("content-type") ?? "";
     console.log(`[realtime] client secret upstream status=${upstream.status} elapsedMs=${elapsedMs}${requestId ? ` requestId=${requestId}` : ""} contentType=${contentType || "unknown"}`);
+
+    let providerMessage = "";
+    try {
+      const providerPayload = JSON.parse(responseText) as { error?: string | { message?: string } };
+      providerMessage = typeof providerPayload.error === "string" ? providerPayload.error : providerPayload.error?.message ?? "";
+    } catch {
+      // The regular error path below handles non-JSON provider responses.
+    }
+
+    // Some accounts/model deployments accept semantic VAD for Realtime
+    // conversation sessions but reject it for transcription sessions. Keep
+    // semantic VAD as the preferred path, while making that explicit 400 a
+    // compatibility case instead of a kiosk-failing error.
+    if (upstream.status === 400 && /turn detection is not supported/i.test(providerMessage)) {
+      selectedTurnDetection = "local_vad";
+      console.warn("[realtime] semantic_vad unsupported for transcription model; retrying with local_vad");
+      upstream = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.openAiApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ session: localSessionConfig }),
+        signal: controller.signal,
+      });
+      responseText = await upstream.text();
+      elapsedMs = Date.now() - started;
+      requestId = upstream.headers.get("x-request-id") ?? upstream.headers.get("x-openai-request-id") ?? requestId;
+      console.log(`[realtime] local_vad fallback status=${upstream.status} elapsedMs=${Date.now() - started}${requestId ? ` requestId=${requestId}` : ""}`);
+      providerMessage = "";
+      try {
+        const providerPayload = JSON.parse(responseText) as { error?: string | { message?: string } };
+        providerMessage = typeof providerPayload.error === "string" ? providerPayload.error : providerPayload.error?.message ?? "";
+      } catch {
+        // The regular error path below handles non-JSON provider responses.
+      }
+    }
 
     if (!upstream.ok) {
       const bodyPreview = responseText.replace(/\s+/g, " ").trim().slice(0, 500);
       console.error(`[realtime] client secret upstream error status=${upstream.status}${requestId ? ` requestId=${requestId}` : ""}${bodyPreview ? ` body=${bodyPreview}` : ""}`);
+      const errorMessage = providerMessage
+        ? `Realtime provider rejected session: ${providerMessage}`
+        : "Realtime provider did not issue a client secret.";
       return res.status(502).json({
-        error: "Realtime provider did not issue a client secret.",
+        error: errorMessage,
         code: upstream.status === 504 ? "upstream_timeout" : "upstream_error",
         upstreamStatus: upstream.status,
         elapsedMs,
@@ -144,7 +206,7 @@ app.post("/api/realtime/session", async (req, res) => {
       return res.status(502).json({ error: "Realtime provider returned no client secret." });
     }
 
-    return res.status(200).json({ clientSecret: payload.value, expiresAt: payload.expires_at });
+    return res.status(200).json({ clientSecret: payload.value, expiresAt: payload.expires_at, turnDetection: selectedTurnDetection });
   } catch (error) {
     const elapsedMs = Date.now() - started;
     if (controller.signal.aborted) {
