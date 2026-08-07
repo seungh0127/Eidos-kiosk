@@ -1247,6 +1247,10 @@ button, input { font: inherit; }
 .camera-feed { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .camera-feed-visible { z-index: 31; top: 0; right: 0; width: min(32rem, 38vw); height: auto; padding: .75rem .75rem 0; opacity: 1; background: #080b0f; pointer-events: none; }
 .camera-feed-visible .camera-preview { display: block; position: relative; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; opacity: 1; }
+.kiosk-screen-rotated.kiosk-debug .camera-feed-visible {
+  transform: rotate(90deg);
+  transform-origin: center;
+}
 .face-box { position: absolute; border: 2px solid #42ff91; box-shadow: 0 0 0 1px #042 inset, 0 0 1rem #42ff9166; }
 .hand-landmarks { position: absolute; top: .75rem; right: .75rem; bottom: 0; left: .75rem; width: calc(100% - 1.5rem); height: calc(100% - .75rem); overflow: visible; pointer-events: none; }
 .hand-landmarks line { stroke: #42ff91; stroke-width: 7; stroke-linecap: round; opacity: .95; vector-effect: non-scaling-stroke; }
@@ -1270,6 +1274,8 @@ button, input { font: inherit; }
 .operator-panel p { margin: 0; color: #c9d6e5; }
 .operator-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .operator-actions button { flex: 1 1 auto; }
+.operator-actions button:disabled { cursor: default; opacity: .48; }
+.operator-actions .operator-mode-on { background: #16885b; border-color: #42ff91; box-shadow: 0 0 .7rem #42ff9144; }
 .operator-control-label { margin-top: .35rem; color: #8b9bab; font-size: .62rem; letter-spacing: .08em; }
 .operator-actions .operator-danger { background: #9b3158; }
 .operator-actions .operator-danger-confirm { background: #e04762; box-shadow: 0 0 .8rem #e0476288; }
@@ -1285,6 +1291,46 @@ button, input { font: inherit; }
 .kiosk-debug .screen { width: 100%; }
 .kiosk-screen-rotated.kiosk-debug > .screen { width: 100cqh; }
 .diagnostic-panel { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: min(32rem, 38vw); overflow: auto; padding: clamp(14rem, 29vw, 25rem) .9rem 1.25rem; background: #0b0e13f5; color: #ecf4ff; border-left: 1px solid #ffffff22; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .74rem; }
+/* The rotation preview turns only the kiosk canvas. Keep the development
+   monitor in the physical viewport, but dock it as a portrait-side sidebar so
+   it follows the left edge of the rotated Hi Eidos screen. */
+.kiosk-screen-rotated.kiosk-debug .diagnostic-panel {
+  top: 0;
+  right: auto;
+  bottom: 0;
+  left: 0;
+  width: min(32rem, 38vw);
+  height: 100vh;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border-top: 0;
+  border-right: 1px solid #ffffff22;
+  border-left: 0;
+  background: #0b0e13f7;
+}
+.kiosk-screen-rotated.kiosk-debug .diagnostic-panel-content {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  width: 100vh;
+  height: min(32rem, 38vw);
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: .5rem;
+  overflow: auto;
+  padding: .9rem;
+  transform: rotate(90deg);
+  transform-origin: left top;
+  background: #0b0e13f7;
+}
+.kiosk-screen-rotated.kiosk-debug .diagnostic-panel-content > * {
+  min-width: 0;
+  min-height: 0;
+  margin-bottom: 0;
+  overflow: auto;
+}
 .diagnostic-header { display: flex; justify-content: space-between; gap: .75rem; align-items: flex-start; margin-bottom: .9rem; }
 .diagnostic-header-actions { display: flex; gap: .35rem; flex: 0 0 auto; }
 .diagnostic-header strong { display: block; color: #66d9ff; letter-spacing: .08em; font-size: .8rem; }

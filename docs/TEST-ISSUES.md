@@ -2,6 +2,19 @@
 
 개발 중 발견한 문제를 우선 기록한다. 테스트가 충분히 쌓인 뒤 한 번에 수정하며, 기록 시점에는 앱 코드를 변경하지 않는다.
 
+## 2026-08-07 — Semantic VAD medium 실험 시작
+
+- 상태: 구현 완료 / 현장 검증 필요
+- 변경: 서버 Realtime 전사 세션의 `turn_detection`을 `semantic_vad`, `eagerness: "medium"`으로 설정
+- 기존 Local VAD의 침묵 기반 자동 `input_audio_buffer.commit`은 제거
+- `input_audio_buffer.speech_started`와 `speech_stopped`를 개발 패널 이벤트 로그에 표시
+- Local VAD는 오디오 미터·소음 기준 진단과 semantic turn이 비정상적으로 오래 열릴 때의 최대 발화시간 안전 commit에만 사용
+- 확인할 것:
+  - `Semantic VAD: speech started` → partial transcript → `Semantic VAD: speech stopped` → `Transcription completed` 순서
+  - 미완성 문장과 완결 문장에서 boundary 시점 차이
+  - 짧은 침묵·주변 대화가 별도 turn으로 잘리지 않는지
+  - semantic boundary 이후 현재 2초 분석 debounce가 체감상 적절한지
+
 ## Open
 
 ### 2026-08-02 — Local VAD false positive 및 반복 turn commit
