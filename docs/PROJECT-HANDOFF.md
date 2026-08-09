@@ -13,7 +13,7 @@ BOOT → IDLE → PRESENCE → REALTIME-CONNECTING → WAKE-LISTEN
 - 얼굴 신뢰도 `0.65 이상`, 화면 면적 `2% 이상`인 얼굴이 `0.5초` 유지되면 관람객으로 확정한다.
 - Realtime이 준비되기 전에는 대기 화면만 보이고, 준비가 끝나면 `Say “Hi, Eidos”` 화면이 보인다.
 - 호출어는 `Hi Eidos`, `하이 에이도스`, `하이 아이도스` 조합만 인정한다. 호출어 뒤 요청이 붙어 있으면 그대로 요청문으로 넘긴다.
-- 호출어 대기는 최대 20초다. `gpt-live-transcribe`의 `semantic_vad · medium`이 발화 경계를 확정한 뒤, 전사 완료 이벤트를 기준으로 2초 debounce 후 `/api/analyze`를 호출한다.
+- 호출어 대기는 최대 20초다. 하나의 일반 Realtime 세션을 `gpt-realtime-2.1-mini`로 열고, 입력 전사는 `gpt-live-transcribe`, 발화 종료는 `semantic_vad · medium`으로 세션 시작부터 활성화한다. 호출어는 실시간 전사 delta에서 감지하고, 호출어 이후 요청은 `speech_stopped`와 해당 오디오 item의 `completed` 전사가 확정된 뒤 2초 debounce를 거쳐 `/api/analyze`로 보낸다. 전사 전용 `type: "transcription"` 세션에 Semantic VAD를 동적으로 넣는 방식은 지원되지 않으므로 사용하지 않는다.
 - 요청을 라우팅할 수 없으면 오류 화면으로 보내지 않고 같은 요청 화면에서 “죄송합니다. 다시 말씀해주세요.”를 보여준 뒤 재청취한다.
 - 요청 발화 완료 이벤트가 15초 안에 오지 않으면 현재 요청을 버리고 처음 대기 상태로 돌아간다.
 - 분석 화면은 로봇 카드가 세로 슬롯처럼 약 3초간 이동한다. 카드 이동 주기는 약 `760ms`, 최종 로봇 안착 후 안정화 시간은 약 `650ms`다.
@@ -67,8 +67,8 @@ Mac의 Option 키는 브라우저 이벤트에서 `Alt`로 처리된다. 최종 
 개발 모니터 하단의 Command 입력창에서 실행한다.
 
 ```text
-/mic pause       마이크 트랙을 mute하고 Local VAD 타이머를 멈춤
-/mic resume      같은 Realtime 연결에서 마이크와 VAD 재개
+/mic pause       마이크 트랙을 mute하고 Realtime 입력을 잠시 멈춤
+/mic resume      같은 Realtime 연결에서 마이크 입력 재개
 /mic status      active / paused / not connected 상태 반환
 /counter status  현재 Soma 카운터 확인
 /counter reset   확인 문구 표시
@@ -77,7 +77,7 @@ Mac의 Option 키는 브라우저 이벤트에서 `Alt`로 처리된다. 최종 
 
 운영 패널에는 위 기능을 버튼으로도 제공한다. `Reset counter`는 실수 방지를 위해 5초 안에 한 번 더 눌러야 실행된다. 카운터 초기화는 `data/eidos.sqlite`의 번호만 0으로 되돌리며 세션 로그나 영상을 삭제하지 않는다. pause는 연결을 끊지 않는다. 재연결 문제를 확인하는 테스트 중 잠시 수음을 막을 때 사용한다.
 
-패널에서는 카메라 권한·MediaPipe 상태, 얼굴 수/confidence/면적/안정 시간, Realtime 연결, microphone level, `semantic_vad · medium`의 speech started/stopped 이벤트, Local VAD 안전장치 commit, partial/completed transcript, `HI EIDOS DETECTED`, 이벤트 로그, 최근 세션, JSON 내보내기, Mock/18개 로봇 갤러리를 확인할 수 있다.
+패널에서는 카메라 권한·MediaPipe 상태, 얼굴 수/confidence/면적/안정 시간, Realtime 연결, Realtime 모델과 `gpt-live-transcribe` 전사 모델, 마이크 선택기와 active input, microphone level, `semantic_vad · medium` 준비 상태, Semantic VAD speech started/stopped, partial/completed transcript, `HI EIDOS DETECTED`, 이벤트 로그, 최근 세션, JSON 내보내기, Mock/18개 로봇 갤러리를 확인할 수 있다.
 
 ## 4. 프로젝트 구조
 
@@ -85,7 +85,7 @@ Mac의 Option 키는 브라우저 이벤트에서 `Alt`로 처리된다. 최종 
 apps/web/
   src/App.tsx       상태 머신, 화면 전환, 운영 패널, Mock 컨트롤
   src/presence.tsx  MediaPipe 얼굴 감지와 presence 판정
-  src/realtime.ts   WebRTC Realtime 전사, 오디오 미터, semantic VAD 이벤트, Local VAD 안전장치
+  src/realtime.ts   WebRTC Realtime 세션, gpt-live-transcribe 전사, Semantic VAD 이벤트, 마이크 선택기와 오디오 미터
   src/styles.css    화면 레이아웃·색상 토큰·모션
   public/media/     robot-01..18.webm와 .webp
 
@@ -210,7 +210,7 @@ type AnalysisResult = {
 
 1. 영구 API 키를 클라이언트 번들, `VITE_*`, 로그, Git에 넣지 않는다.
 2. `AnalysisResult`와 `/api/*` 계약을 먼저 유지한 뒤 UI를 바꾼다.
-3. 얼굴 감지 threshold, Local VAD threshold, wakeword 정규화는 실제 녹음 테스트 없이 임의로 바꾸지 않는다.
+3. 얼굴 감지 threshold, 입력 오디오 보정값, wakeword 정규화는 실제 녹음 테스트 없이 임의로 바꾸지 않는다.
 4. 로봇 선택을 더 정교하게 만들더라도 현재 원문 문서의 우선순위를 먼저 보존한다.
 5. 새 UI는 `?mock&gallery`에서 카메라·API 없이 모든 상태를 확인할 수 있어야 한다.
 6. 제출 전 아래 검사를 실행한다.

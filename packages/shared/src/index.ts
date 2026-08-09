@@ -42,6 +42,7 @@ export type RuntimeStatus = {
   models: {
     routing: string;
     transcription: string;
+    realtime: string;
   };
   mockMode: boolean;
 };

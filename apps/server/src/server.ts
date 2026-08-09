@@ -79,39 +79,30 @@ app.post("/api/realtime/session", async (req, res) => {
   if (config.mockMode) return res.status(204).end();
   if (!config.openAiApiKey) return res.status(503).json({ error: "OpenAI API key is not configured." });
 
-  const baseSessionConfig = {
-    type: "transcription",
+  const sessionConfig = {
+    // Semantic VAD is supported by the general Realtime session. The
+    // transcription-only session accepts gpt-live-transcribe but rejects
+    // semantic_vad, which was the source of the previous 400 errors.
+    type: "realtime",
+    model: config.realtimeModel,
+    output_modalities: ["text"],
     audio: {
       input: {
         format: { type: "audio/pcm", rate: 24000 },
         transcription: {
           model: config.transcriptionModel,
           languages: ["ko", "en"],
-          keywords: ["Eidos", "에이도스"],
-          delay: "low",
+          prompt: "Korean and English exhibition kiosk. The wake phrase is Hi Eidos, 하이 에이도스, 아이도스, or 에이도스.",
         },
-      },
-    },
-  };
-  const semanticSessionConfig = {
-    ...baseSessionConfig,
-    audio: {
-      ...baseSessionConfig.audio,
-      input: {
-        ...baseSessionConfig.audio.input,
-        turn_detection: { type: "semantic_vad", eagerness: "medium" },
-      },
-    },
-  };
-  const localSessionConfig = {
-    ...baseSessionConfig,
-    audio: {
-      ...baseSessionConfig.audio,
-      input: {
-        ...baseSessionConfig.audio.input,
-        // The browser Local VAD commits each turn explicitly after a
-        // calibrated silence interval.
-        turn_detection: null,
+        // Semantic VAD is active from the beginning. The browser uses the
+        // streamed transcript deltas for wakeword detection, then waits for
+        // the semantic boundary and completed transcript before routing.
+        turn_detection: {
+          type: "semantic_vad",
+          eagerness: "medium",
+          create_response: false,
+          interrupt_response: false,
+        },
       },
     },
   };
@@ -126,19 +117,18 @@ app.post("/api/realtime/session", async (req, res) => {
   res.on("close", abortIfClientDisconnects);
 
   try {
-    let selectedTurnDetection: "semantic_vad" | "local_vad" = "semantic_vad";
-    let upstream = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+    const upstream = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.openAiApiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ session: semanticSessionConfig }),
+      body: JSON.stringify({ session: sessionConfig }),
       signal: controller.signal,
     });
-    let responseText = await upstream.text();
-    let elapsedMs = Date.now() - started;
-    let requestId = upstream.headers.get("x-request-id") ?? upstream.headers.get("x-openai-request-id") ?? "";
+    const responseText = await upstream.text();
+    const elapsedMs = Date.now() - started;
+    const requestId = upstream.headers.get("x-request-id") ?? upstream.headers.get("x-openai-request-id") ?? "";
     const contentType = upstream.headers.get("content-type") ?? "";
     console.log(`[realtime] client secret upstream status=${upstream.status} elapsedMs=${elapsedMs}${requestId ? ` requestId=${requestId}` : ""} contentType=${contentType || "unknown"}`);
 
@@ -148,35 +138,6 @@ app.post("/api/realtime/session", async (req, res) => {
       providerMessage = typeof providerPayload.error === "string" ? providerPayload.error : providerPayload.error?.message ?? "";
     } catch {
       // The regular error path below handles non-JSON provider responses.
-    }
-
-    // Some accounts/model deployments accept semantic VAD for Realtime
-    // conversation sessions but reject it for transcription sessions. Keep
-    // semantic VAD as the preferred path, while making that explicit 400 a
-    // compatibility case instead of a kiosk-failing error.
-    if (upstream.status === 400 && /turn detection is not supported/i.test(providerMessage)) {
-      selectedTurnDetection = "local_vad";
-      console.warn("[realtime] semantic_vad unsupported for transcription model; retrying with local_vad");
-      upstream = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.openAiApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ session: localSessionConfig }),
-        signal: controller.signal,
-      });
-      responseText = await upstream.text();
-      elapsedMs = Date.now() - started;
-      requestId = upstream.headers.get("x-request-id") ?? upstream.headers.get("x-openai-request-id") ?? requestId;
-      console.log(`[realtime] local_vad fallback status=${upstream.status} elapsedMs=${Date.now() - started}${requestId ? ` requestId=${requestId}` : ""}`);
-      providerMessage = "";
-      try {
-        const providerPayload = JSON.parse(responseText) as { error?: string | { message?: string } };
-        providerMessage = typeof providerPayload.error === "string" ? providerPayload.error : providerPayload.error?.message ?? "";
-      } catch {
-        // The regular error path below handles non-JSON provider responses.
-      }
     }
 
     if (!upstream.ok) {
@@ -206,7 +167,12 @@ app.post("/api/realtime/session", async (req, res) => {
       return res.status(502).json({ error: "Realtime provider returned no client secret." });
     }
 
-    return res.status(200).json({ clientSecret: payload.value, expiresAt: payload.expires_at, turnDetection: selectedTurnDetection });
+    return res.status(200).json({
+      clientSecret: payload.value,
+      expiresAt: payload.expires_at,
+      turnDetection: "semantic_vad",
+      realtimeModel: config.realtimeModel,
+    });
   } catch (error) {
     const elapsedMs = Date.now() - started;
     if (controller.signal.aborted) {
@@ -281,7 +247,7 @@ app.get("/api/runtime", (_req, res) => {
     counter: database.getCounter(),
     assetsReady: ids.length === 18,
     availableRobotIds: ids,
-    models: { routing: config.routingModel, transcription: config.transcriptionModel },
+    models: { routing: config.routingModel, transcription: config.transcriptionModel, realtime: config.realtimeModel },
     mockMode: config.mockMode,
   });
 });

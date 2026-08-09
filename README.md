@@ -49,7 +49,7 @@ Copy `.env.example` to `.env`, configure the key, and double-click `start-eidos.
 - `packages/shared`: shared phases, result contracts, and runtime status types
 - `data/eidos.sqlite`: local counter and 30-day session metadata; never commit this directory
 
-The browser never receives the permanent OpenAI API key. The server creates a short-lived transcription client secret through `/v1/realtime/client_secrets`; the browser uses that secret only in memory to post its SDP offer to `/v1/realtime/calls`.
+The browser never receives the permanent OpenAI API key. The server creates a short-lived Realtime client secret through `/v1/realtime/client_secrets`, configured with `gpt-realtime-2.1-mini`, `gpt-live-transcribe`, and `semantic_vad · medium`; the browser uses that secret only in memory to post its SDP offer to `/v1/realtime/calls`.
 
 ## Handoff and operations
 

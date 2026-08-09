@@ -7,7 +7,7 @@ The front end is intentionally separated into behavior and presentation:
 - `apps/web/src/App.tsx` owns the explicit kiosk phases and transitions.
 - `apps/web/src/presence.tsx` owns camera permission, local face detection and visitor presence.
 - `apps/web/src/realtime.ts` owns the browser WebRTC transcription connection.
-- The server Realtime transcription session uses `semantic_vad` with `eagerness: "medium"` as the primary turn detector. `realtime.ts` listens for `input_audio_buffer.speech_started` / `speech_stopped`; the browser's amplitude VAD remains telemetry and a maximum-duration safety commit only.
+- The server creates one general Realtime session using `gpt-realtime-2.1-mini` as the semantic turn detector and `gpt-live-transcribe` as its input transcription model. `semantic_vad · medium` is active from the start, including wake-listen. The browser uses transcript deltas for exact wakeword detection, then waits for `speech_stopped` and the matching completed transcript before sending the request to Luna. There is no dynamic post-wake `session.update` and no silent Local VAD fallback; if Semantic VAD is not enabled, the connection fails visibly so the operator can diagnose the provider/session configuration.
 - `apps/web/src/styles.css` contains presentation tokens, layout and motion; replace these styles without changing the state or API contracts.
 - The development monitor is rendered from `DiagnosticPanel` in `apps/web/src/App.tsx`; it is intentionally diagnostic rather than presentation-polished. It consumes telemetry from `presence.tsx` and the microphone level callback from `realtime.ts`. `Ctrl+Option+E` toggles it, and the panel command input supports `/mic pause`, `/mic resume`, and `/mic status`.
 - `?mock` removes the camera and Realtime dependency. The Mock panel can drive the request flow, while `?mock&gallery` previews all phases and all 18 result assets.
@@ -30,7 +30,7 @@ The design layer should keep result video playback muted, looped and `playsInlin
 
 ## API handoff
 
-- `POST /api/realtime/session`: returns a short-lived Realtime client secret; the permanent key never enters the browser. The browser uses that secret in memory for the SDP request to OpenAI.
+- `POST /api/realtime/session`: returns a short-lived Realtime client secret configured with `gpt-realtime-2.1-mini`, `gpt-live-transcribe`, and `semantic_vad · medium`; the permanent key never enters the browser. The browser uses that secret in memory for the SDP request to OpenAI.
 - `POST /api/analyze`: `{ sessionId, transcript, startedAt }` in, `AnalysisResult` out.
 - `GET /api/runtime`: counter, asset readiness and model configuration.
 - `GET /api/operator/status`: local diagnostics.

@@ -1345,8 +1345,8 @@ button, input { font: inherit; }
 .diagnostic-row { display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; }
 .diagnostic-row span { color: #9eafc1; }
 .diagnostic-row strong { max-width: 70%; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; color: #ecf4ff; font-size: .7rem; }
-.diagnostic-camera-select { display: grid; gap: .25rem; color: #9eafc1; }
-.diagnostic-camera-select select { width: 100%; min-width: 0; padding: .4rem .45rem; border: 1px solid #ffffff1c; border-radius: .3rem; background: #0008; color: #fff; font: inherit; }
+.diagnostic-device-select { display: grid; gap: .25rem; color: #9eafc1; }
+.diagnostic-device-select select { width: 100%; min-width: 0; padding: .4rem .45rem; border: 1px solid #ffffff1c; border-radius: .3rem; background: #0008; color: #fff; font: inherit; }
 .diagnostic-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .35rem; color: #9eafc1; }
 .diagnostic-grid span { display: flex; justify-content: space-between; padding: .35rem; background: #0004; border-radius: .3rem; }
 .diagnostic-grid b { color: #fff; }

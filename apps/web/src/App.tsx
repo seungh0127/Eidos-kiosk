@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSPr
 import { ROBOT_IDS } from "@eidos/shared";
 import type { AnalysisResult, KioskPhase, RobotCardOffset, RobotCardOffsets, RuntimeStatus } from "@eidos/shared";
 import { PresenceDetector, type CameraDevice, type FaceTelemetry } from "./presence";
-import { RealtimeConnectionCancelledError, startRealtimeTranscription, type RealtimeStop, type RealtimeVadConfig, type VadSnapshot } from "./realtime";
+import { enumerateMicrophoneDevices, RealtimeConnectionCancelledError, startRealtimeTranscription, type MicrophoneDevice, type RealtimeStop, type RealtimeVadConfig, type VadSnapshot } from "./realtime";
 import { TextAnimate } from "./registry/magicui/text-animate";
 import "./styles.css";
 
@@ -15,12 +15,31 @@ const REQUEST_FINALIZE_DELAY_MS = 2000;
 const WAKE_HINT_DELAY_MS = 3500;
 const REQUEST_RETRY_TIMEOUT_MS = 15000;
 const MIC_CALIBRATION_PHASE_MS = 7000;
+const MICROPHONE_DEVICE_STORAGE_KEY = "eidos.microphoneDeviceId";
 // Keep the original visual beat between "face detected" and the wake-listen
 // hint. The prompt is also gated by the Realtime-ready phase below.
 const INTRO_REVEAL_DELAY_MS = 1000;
 // Exit-fade duration once the reels finish holding on their result (matches
 // the .robot-loading-locked / robot-loading-out CSS animation).
 const ROBOT_CARD_SETTLE_MS = 650;
+
+function savedMicrophoneDeviceId(): string {
+  try {
+    return window.localStorage.getItem(MICROPHONE_DEVICE_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveMicrophoneDeviceId(deviceId: string): void {
+  try {
+    if (deviceId) window.localStorage.setItem(MICROPHONE_DEVICE_STORAGE_KEY, deviceId);
+    else window.localStorage.removeItem(MICROPHONE_DEVICE_STORAGE_KEY);
+  } catch {
+    // The kiosk can still use the selected device for this page session when
+    // localStorage is unavailable (for example, under a restrictive profile).
+  }
+}
 
 // --- Slot-machine "analyzing" reel tuning ----------------------------------
 // Every knob for the reel's choreography lives here. Each row runs a single
@@ -176,7 +195,7 @@ const MOCK_RUNTIME_STATUS: RuntimeStatus = {
   counter: 0,
   assetsReady: true,
   availableRobotIds: ROBOT_IDS,
-  models: { routing: "local-mock-routing", transcription: "local-mock-transcription" },
+  models: { routing: "local-mock-routing", transcription: "local-mock-transcription", realtime: "local-mock-realtime" },
   mockMode: true,
 };
 
@@ -374,11 +393,14 @@ export default function App() {
   const [robotCardOffsets, setRobotCardOffsets] = useState<RobotCardOffsets>(DEFAULT_ROBOT_CARD_OFFSETS);
   const [presenceStatus, setPresenceStatus] = useState("Starting camera");
   const [realtimeStatus, setRealtimeStatus] = useState("Not connected");
-  const [turnDetectionMode, setTurnDetectionMode] = useState<"unknown" | "semantic_vad" | "local_vad">("unknown");
+  const [turnDetectionMode, setTurnDetectionMode] = useState<"unknown" | "semantic_vad">("unknown");
   const [operatorOpen, setOperatorOpen] = useState(DEBUG_PANEL);
   const [screenRotated, setScreenRotated] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
   const [cameraDeviceId, setCameraDeviceId] = useState("");
+  const [microphoneDevices, setMicrophoneDevices] = useState<MicrophoneDevice[]>([]);
+  const [microphoneDeviceId, setMicrophoneDeviceId] = useState(savedMicrophoneDeviceId);
+  const [activeMicrophoneDeviceId, setActiveMicrophoneDeviceId] = useState("");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [operatorSessions, setOperatorSessions] = useState<Array<Record<string, unknown>>>([]);
   const [galleryRobotId, setGalleryRobotId] = useState<number | null>(null);
@@ -482,15 +504,48 @@ export default function App() {
     setDebugLogs((previous) => [...previous.slice(-199), { time: new Date().toLocaleTimeString("ko-KR", { hour12: false }), source, message }]);
   }, []);
 
+  const refreshMicrophoneDevices = useCallback(async () => {
+    try {
+      setMicrophoneDevices(await enumerateMicrophoneDevices());
+    } catch {
+      setMicrophoneDevices([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.enumerateDevices) return undefined;
+    void refreshMicrophoneDevices();
+    const handleDeviceChange = () => void refreshMicrophoneDevices();
+    mediaDevices.addEventListener?.("devicechange", handleDeviceChange);
+    return () => mediaDevices.removeEventListener?.("devicechange", handleDeviceChange);
+  }, [refreshMicrophoneDevices]);
+
+  const handleMicrophoneDevices = useCallback((devices: MicrophoneDevice[], activeDeviceId: string, selectionFallback: boolean) => {
+    if (devices.length) setMicrophoneDevices(devices);
+    setActiveMicrophoneDeviceId(activeDeviceId);
+    if (!selectionFallback) return;
+    setMicrophoneDeviceId("");
+    saveMicrophoneDeviceId("");
+    appendDebugLog("microphone", "Saved microphone unavailable · switched to automatic selection");
+  }, [appendDebugLog]);
+
+  const handleMicrophoneDeviceChange = useCallback((deviceId: string) => {
+    setMicrophoneDeviceId(deviceId);
+    saveMicrophoneDeviceId(deviceId);
+    const label = microphoneDevices.find((device) => device.deviceId === deviceId)?.label;
+    appendDebugLog("microphone", deviceId ? `Selected ${label ?? "microphone"} · applies on next Realtime connection` : "Using automatic microphone selection on next Realtime connection");
+  }, [appendDebugLog, microphoneDevices]);
+
   const handleVadSnapshot = useCallback((snapshot: VadSnapshot) => {
     setVadSnapshot(snapshot);
     if (snapshot.lastCommitAt !== null && snapshot.lastCommitAt !== lastVadCommitRef.current) {
       lastVadCommitRef.current = snapshot.lastCommitAt;
-      appendDebugLog("realtime", `Turn boundary committed · level ${snapshot.level.toFixed(3)} · threshold ${snapshot.threshold.toFixed(3)}`);
+      appendDebugLog("realtime", `Semantic VAD safety commit · level ${snapshot.level.toFixed(3)} · meter threshold ${snapshot.threshold.toFixed(3)}`);
     }
   }, [appendDebugLog]);
 
-  const handleTurnDetection = useCallback((mode: "semantic_vad" | "local_vad") => {
+  const handleTurnDetection = useCallback((mode: "semantic_vad") => {
     setTurnDetectionMode(mode);
     appendDebugLog("realtime", `Turn detection selected: ${mode}`);
   }, [appendDebugLog]);
@@ -706,7 +761,6 @@ export default function App() {
       speechThreshold: suggestedThreshold,
       noiseMultiplier: 1.25,
       noiseMargin: 0.02,
-      startMs: 320,
     };
     micCalibrationPhaseRef.current = "complete";
     setMicCalibration({
@@ -715,9 +769,9 @@ export default function App() {
       voiceFloor,
       voicePeak,
       suggestedThreshold,
-      message: "보정 완료. 다음 Realtime 연결부터 적용됩니다.",
+      message: "보정 완료. 다음 Realtime 연결의 오디오 미터 진단부터 적용됩니다.",
     });
-    appendDebugLog("operator", `Mic calibration complete · voice window ${Math.round(voiceElapsedMs)}ms · threshold ${suggestedThreshold.toFixed(3)} · applies next Realtime connection`);
+    appendDebugLog("operator", `Mic calibration complete · voice window ${Math.round(voiceElapsedMs)}ms · meter threshold ${suggestedThreshold.toFixed(3)} · applies next Realtime connection`);
   }, [appendDebugLog]);
 
   const startMicCalibration = useCallback(() => {
@@ -976,7 +1030,7 @@ export default function App() {
 
   // Voice-trigger counterpart to the camera hand-wave: listens for a spoken
   // "안녕"/"안녕하세요" while the greeting card is showing, via the same
-  // Realtime transcription session used for wake-word listening.
+  // Realtime semantic session used for wake-word listening.
   const checkGreetingText = useCallback((text: string) => {
     if (greetingHandledRef.current || !containsGreeting(text)) return;
     greetingHandledRef.current = true;
@@ -1106,9 +1160,10 @@ export default function App() {
           appendDebugLog("realtime", nextStatus);
         },
         onAudioLevel: handleAudioLevel,
+        onMicrophoneDevices: handleMicrophoneDevices,
         onVad: handleVadSnapshot,
         onTurnDetection: handleTurnDetection,
-      }, { signal: abortController.signal, vad: vadOverrideRef.current });
+      }, { signal: abortController.signal, vad: vadOverrideRef.current, audioDeviceId: microphoneDeviceId });
       if (attempt !== realtimeAttemptRef.current || abortController.signal.aborted) {
         stop();
         return;
@@ -1125,7 +1180,7 @@ export default function App() {
     } finally {
       if (realtimeAttemptRef.current === attempt) realtimeAbortRef.current = null;
     }
-  }, [appendDebugLog, handleAudioLevel, handleTranscriptCompleted, handleTranscriptDelta, handleTurnDetection, handleVadSnapshot, scheduleRequestTimeout, showError]);
+  }, [appendDebugLog, handleAudioLevel, handleMicrophoneDevices, handleTranscriptCompleted, handleTranscriptDelta, handleTurnDetection, handleVadSnapshot, microphoneDeviceId, scheduleRequestTimeout, showError]);
 
   useEffect(() => {
     requestRetryRef.current = startRequestRetry;
@@ -1183,9 +1238,10 @@ export default function App() {
           appendDebugLog("realtime", nextStatus);
         },
         onAudioLevel: handleAudioLevel,
+        onMicrophoneDevices: handleMicrophoneDevices,
         onVad: handleVadSnapshot,
         onTurnDetection: handleTurnDetection,
-      }, { signal: abortController.signal, vad: vadOverrideRef.current });
+      }, { signal: abortController.signal, vad: vadOverrideRef.current, audioDeviceId: microphoneDeviceId });
       if (attempt !== realtimeAttemptRef.current || abortController.signal.aborted) {
         stop();
         return;
@@ -1207,7 +1263,7 @@ export default function App() {
     } finally {
       if (realtimeAttemptRef.current === attempt) realtimeAbortRef.current = null;
     }
-  }, [appendDebugLog, handleAudioLevel, handleTranscriptCompleted, handleTranscriptDelta, handleTurnDetection, handleVadSnapshot, handleWakeTimeout, phase, showError]);
+  }, [appendDebugLog, handleAudioLevel, handleMicrophoneDevices, handleTranscriptCompleted, handleTranscriptDelta, handleTurnDetection, handleVadSnapshot, handleWakeTimeout, microphoneDeviceId, phase, showError]);
 
   const startGreetingListen = useCallback(async () => {
     if (MOCK) return; // Mock testing uses the "Wave with open hand" control instead of a live mic.
@@ -1226,9 +1282,10 @@ export default function App() {
           appendDebugLog("realtime", nextStatus);
         },
         onAudioLevel: handleAudioLevel,
+        onMicrophoneDevices: handleMicrophoneDevices,
         onVad: handleVadSnapshot,
         onTurnDetection: handleTurnDetection,
-      }, { signal: abortController.signal, vad: vadOverrideRef.current });
+      }, { signal: abortController.signal, vad: vadOverrideRef.current, audioDeviceId: microphoneDeviceId });
       if (attempt !== realtimeAttemptRef.current || abortController.signal.aborted) {
         stop();
         return;
@@ -1240,7 +1297,7 @@ export default function App() {
     } finally {
       if (realtimeAttemptRef.current === attempt) realtimeAbortRef.current = null;
     }
-  }, [appendDebugLog, handleAudioLevel, handleGreetingCompleted, handleGreetingDelta, handleTurnDetection, handleVadSnapshot]);
+  }, [appendDebugLog, handleAudioLevel, handleGreetingCompleted, handleGreetingDelta, handleMicrophoneDevices, handleTurnDetection, handleVadSnapshot, microphoneDeviceId]);
 
   useEffect(() => {
     if (MOCK || phase !== "result" || resultPhotoStage !== "greeting") return undefined;
@@ -1449,7 +1506,7 @@ export default function App() {
         status={`${phase} · ${runtime?.counter ?? 0} · ${presenceStatus} · ${realtimeStatus}`}
       />}
 
-      {operatorOpen && <DiagnosticPanel phase={phase} runtime={runtime} presenceStatus={presenceStatus} realtimeStatus={realtimeStatus} turnDetectionMode={turnDetectionMode} faceTelemetry={faceTelemetry} micLevel={micLevel} micPaused={micPaused} vadSnapshot={vadSnapshot} micCalibration={micCalibration} requestLockEnabled={requestLockEnabled} requestTurnLocked={requestTurnLocked} wakeDetected={wakeDetected} transcript={transcript} requestText={requestText} logs={debugLogs} sessions={operatorSessions} cameraDevices={cameraDevices} cameraDeviceId={cameraDeviceId} onCameraDeviceChange={handleCameraDeviceChange} screenRotated={screenRotated} onToggleScreenRotation={() => setScreenRotated((value) => !value)} onClose={() => setOperatorOpen(false)} onReset={resetToIdle} onExport={() => downloadSessions(operatorSessions)} onGallery={() => window.location.assign("?mock&gallery")} onCommand={handleOperatorCommand} onCounterReset={resetCounter} onToggleRequestLock={toggleRequestLock} onStartMicCalibration={startMicCalibration} onResetMicCalibration={resetMicCalibration} />}
+      {operatorOpen && <DiagnosticPanel phase={phase} runtime={runtime} presenceStatus={presenceStatus} realtimeStatus={realtimeStatus} turnDetectionMode={turnDetectionMode} faceTelemetry={faceTelemetry} micLevel={micLevel} micPaused={micPaused} vadSnapshot={vadSnapshot} micCalibration={micCalibration} requestLockEnabled={requestLockEnabled} requestTurnLocked={requestTurnLocked} wakeDetected={wakeDetected} transcript={transcript} requestText={requestText} logs={debugLogs} sessions={operatorSessions} cameraDevices={cameraDevices} cameraDeviceId={cameraDeviceId} onCameraDeviceChange={handleCameraDeviceChange} microphoneDevices={microphoneDevices} microphoneDeviceId={microphoneDeviceId} activeMicrophoneDeviceId={activeMicrophoneDeviceId} onMicrophoneDeviceChange={handleMicrophoneDeviceChange} screenRotated={screenRotated} onToggleScreenRotation={() => setScreenRotated((value) => !value)} onClose={() => setOperatorOpen(false)} onReset={resetToIdle} onExport={() => downloadSessions(operatorSessions)} onGallery={() => window.location.assign("?mock&gallery")} onCommand={handleOperatorCommand} onCounterReset={resetCounter} onToggleRequestLock={toggleRequestLock} onStartMicCalibration={startMicCalibration} onResetMicCalibration={resetMicCalibration} />}
       {!MOCK && <div className="production-status" aria-hidden="true">{runtime?.assetsReady ? "" : "Media pending"}</div>}
     </main>
   );
@@ -1496,12 +1553,16 @@ function DiagnosticPanel({
   cameraDevices,
   cameraDeviceId,
   onCameraDeviceChange,
+  microphoneDevices,
+  microphoneDeviceId,
+  activeMicrophoneDeviceId,
+  onMicrophoneDeviceChange,
 }: {
   phase: KioskPhase;
   runtime: RuntimeStatus | null;
   presenceStatus: string;
   realtimeStatus: string;
-  turnDetectionMode: "unknown" | "semantic_vad" | "local_vad";
+  turnDetectionMode: "unknown" | "semantic_vad";
   faceTelemetry: FaceTelemetry;
   micLevel: number;
   micPaused: boolean;
@@ -1528,8 +1589,16 @@ function DiagnosticPanel({
   cameraDevices: CameraDevice[];
   cameraDeviceId: string;
   onCameraDeviceChange: (deviceId: string) => void;
+  microphoneDevices: MicrophoneDevice[];
+  microphoneDeviceId: string;
+  activeMicrophoneDeviceId: string;
+  onMicrophoneDeviceChange: (deviceId: string) => void;
 }) {
   const signalPercent = Math.round(Math.min(1, micLevel) * 100);
+  const activeMicrophoneLabel = microphoneDevices.find((device) => device.deviceId === activeMicrophoneDeviceId)?.label ?? (activeMicrophoneDeviceId ? "Active microphone" : "not connected");
+  const turnDetectionLabel = turnDetectionMode === "unknown"
+    ? "pending"
+    : `semantic_vad · medium${wakeDetected || phase === "request-listen" ? " · request" : ""}`;
   const [command, setCommand] = useState("");
   const [commandResult, setCommandResult] = useState("");
   const [counterResetArmed, setCounterResetArmed] = useState(false);
@@ -1557,7 +1626,7 @@ function DiagnosticPanel({
       <div className="diagnostic-row"><span>Camera</span><strong className={`status-${faceTelemetry.camera}`}>{faceTelemetry.camera}</strong></div>
       <div className="diagnostic-row"><span>Detector</span><strong className={`status-${faceTelemetry.detector}`}>{faceTelemetry.detector}</strong></div>
       <div className="diagnostic-row"><span>Presence</span><strong className={faceTelemetry.active ? "status-good" : "status-idle"}>{faceTelemetry.active ? "FACE CONFIRMED" : "waiting"}</strong></div>
-      <label className="diagnostic-camera-select">Camera device<select value={cameraDeviceId} onChange={(event) => onCameraDeviceChange(event.target.value)}><option value="">Auto · external preferred</option>{cameraDevices.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>)}</select></label>
+      <label className="diagnostic-device-select">Camera device<select value={cameraDeviceId} onChange={(event) => onCameraDeviceChange(event.target.value)}><option value="">Auto · external preferred</option>{cameraDevices.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>)}</select></label>
       <div className="diagnostic-grid"><span>Faces <b>{faceTelemetry.faceCount}</b></span><span>Confidence <b>{faceTelemetry.confidence.toFixed(2)}</b></span><span>Area <b>{(faceTelemetry.areaRatio * 100).toFixed(1)}%</b></span><span>Stable <b>{(faceTelemetry.stableMs / 1000).toFixed(1)}s</b></span><span>Absent <b>{(faceTelemetry.absentMs / 1000).toFixed(1)}s</b></span></div>
       <small className="diagnostic-muted">threshold: confidence ≥ .65 · area ≥ 2.0% · stable ≥ .5s<br />{presenceStatus} · last frame {faceTelemetry.lastFrameAt}</small>
     </section>
@@ -1572,11 +1641,15 @@ function DiagnosticPanel({
     <section className="diagnostic-section">
       <div className="diagnostic-kicker">MICROPHONE / REALTIME</div>
       <div className="diagnostic-row"><span>Realtime</span><strong className={realtimeStatus.startsWith("connected") ? "status-good" : "status-idle"}>{realtimeStatus}</strong></div>
-      <div className="diagnostic-row"><span>Model</span><strong>{runtime?.models.transcription ?? "gpt-live-transcribe"}</strong></div>
-      <div className="diagnostic-row"><span>Turn detection</span><strong>{turnDetectionMode === "semantic_vad" ? "semantic_vad · medium" : turnDetectionMode === "local_vad" ? "local_vad · 1s silence" : "pending"}</strong></div>
+      <div className="diagnostic-row"><span>Realtime model</span><strong>{runtime?.models.realtime ?? "gpt-realtime-2.1-mini"}</strong></div>
+      <div className="diagnostic-row"><span>Transcription</span><strong>{runtime?.models.transcription ?? "gpt-live-transcribe"}</strong></div>
+      <div className="diagnostic-row"><span>Turn detection</span><strong>{turnDetectionLabel}</strong></div>
+      <label className="diagnostic-device-select">Microphone input<select value={microphoneDeviceId} onChange={(event) => onMicrophoneDeviceChange(event.target.value)}><option value="">Auto · system/browser default</option>{microphoneDeviceId && !microphoneDevices.some((device) => device.deviceId === microphoneDeviceId) && <option value={microphoneDeviceId}>Saved microphone · currently unavailable</option>}{microphoneDevices.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Microphone ${index + 1}`}</option>)}</select></label>
+      <div className="diagnostic-row"><span>Active input</span><strong className={activeMicrophoneDeviceId ? "status-good" : "status-idle"}>{activeMicrophoneLabel}</strong></div>
+      <small className="diagnostic-muted">Selection is saved on this Mac and applies from the next Realtime connection.</small>
       <div className="mic-meter"><span style={{ width: `${signalPercent}%` }} /></div>
       <div className="diagnostic-row"><span>Input level</span><strong className={signalPercent > 1 ? "status-good" : "status-idle"}>{signalPercent}% · {signalPercent > 1 ? "signal received" : "silence / waiting"}</strong></div>
-      <div className="diagnostic-grid"><span>Noise floor <b>{vadSnapshot ? vadSnapshot.noiseFloor.toFixed(3) : "—"}</b></span><span>Local threshold <b>{vadSnapshot ? vadSnapshot.threshold.toFixed(3) : "—"}</b></span><span>Local VAD <b className={vadSnapshot?.speechActive ? "status-good" : "status-idle"}>{vadSnapshot?.speechActive ? "SPEECH" : "quiet"}</b></span><span>Calibration <b>{vadSnapshot?.calibrated ? "ready" : "warming"}</b></span></div>
+      <div className="diagnostic-grid"><span>Noise floor <b>{vadSnapshot ? vadSnapshot.noiseFloor.toFixed(3) : "—"}</b></span><span>Meter threshold <b>{vadSnapshot ? vadSnapshot.threshold.toFixed(3) : "—"}</b></span><span>Semantic turn <b className={vadSnapshot?.speechActive ? "status-good" : "status-idle"}>{vadSnapshot?.speechActive ? "SPEECH" : "quiet"}</b></span><span>Calibration <b>{vadSnapshot?.calibrated ? "ready" : "warming"}</b></span></div>
     </section>
 
     <section className="diagnostic-section diagnostic-experimental">
@@ -1587,7 +1660,7 @@ function DiagnosticPanel({
         <button type="button" onClick={onStartMicCalibration} disabled={micCalibration.phase === "noise" || micCalibration.phase === "voice" || micPaused}>{micCalibration.phase === "noise" ? "소음 측정 중…" : micCalibration.phase === "voice" ? "테스트 발화 중…" : "마이크 재보정 시작"}</button>
       </div>
       <div className="diagnostic-grid"><span>Ambient <b>{micCalibration.noiseFloor === null ? "—" : micCalibration.noiseFloor.toFixed(3)}</b></span><span>Voice <b>{micCalibration.voiceFloor === null ? "—" : micCalibration.voiceFloor.toFixed(3)}</b></span><span>Peak <b>{micCalibration.voicePeak === null ? "—" : micCalibration.voicePeak.toFixed(3)}</b></span><span>New threshold <b>{micCalibration.suggestedThreshold === null ? "—" : micCalibration.suggestedThreshold.toFixed(3)}</b></span></div>
-      <small className="diagnostic-muted">{micCalibration.message}<br />보정값은 다음 Realtime 연결부터 적용되며 새로고침하면 기본값으로 돌아갑니다.</small>
+      <small className="diagnostic-muted">{micCalibration.message}<br />보정값은 다음 Realtime 연결의 오디오 미터 진단부터 적용되며 새로고침하면 기본값으로 돌아갑니다.</small>
       <button type="button" onClick={onResetMicCalibration}>마이크 기본값 복원</button>
     </section>
 

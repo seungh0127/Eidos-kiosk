@@ -2,9 +2,26 @@
 
 개발 중 발견한 문제를 우선 기록한다. 테스트가 충분히 쌓인 뒤 한 번에 수정하며, 기록 시점에는 앱 코드를 변경하지 않는다.
 
+## 2026-08-09 — 요청 단계 Semantic VAD 전환 시험 (구현 교체 완료)
+
+- 배경: 호출어 대기 중 주변 소음에도 Local VAD가 자주 작동하지만, Semantic VAD는 실제 요청 단계에서 문장의 의미적 완결성을 판단하기 위해 필요하다.
+- 원인: `type: "transcription"` 전용 세션에서 `gpt-live-transcribe`에 `semantic_vad`를 동적으로 넣었기 때문에 upstream 400이 반환됐다. Semantic VAD는 일반 Realtime 세션의 turn detector로 구성해야 한다.
+- 반영:
+  - 일반 Realtime 세션을 `gpt-realtime-2.1-mini`로 생성한다.
+  - 입력 전사는 `gpt-live-transcribe`, 언어 힌트는 `ko/en`, 호출어 힌트는 transcription prompt로 전달한다.
+  - `semantic_vad · medium`은 세션 시작부터 켜고 `create_response: false`, `interrupt_response: false`로 모델 음성 응답은 만들지 않는다.
+  - 호출어는 delta에서 감지하고, `speech_stopped` 이후 `completed` 전사를 확정해 Luna로 보낸다.
+  - Semantic VAD가 세션 응답에서 활성화되지 않으면 Local VAD로 조용히 전환하지 않고 연결 오류로 표시한다.
+- 다음 현장 확인 로그:
+  - `Turn detection: semantic_vad · medium · gpt-realtime-2.1-mini`
+  - `Realtime semantic session ready`
+  - `Semantic VAD ready · medium`
+  - `Semantic VAD: speech started` → partial transcript → `Semantic VAD: speech stopped` → `Transcription completed`
+- 참고: `gpt-live-transcribe`의 `delay`는 부분 전사 지연/정확도 조절이며 의미 기반 발화 종료 기능이 아니다. 여러 화자의 목소리 분리는 별도 문제다.
+
 ## 2026-08-07 — Semantic VAD medium 실험 시작
 
-- 상태: 구현 완료 / 현장 검증 필요
+- 상태: 이전 구현 기록 / 2026-08-09 요청 단계 동적 전환 방식으로 대체
 - 변경: 서버 Realtime 전사 세션의 `turn_detection`을 `semantic_vad`, `eagerness: "medium"`으로 설정
 - 기존 Local VAD의 침묵 기반 자동 `input_audio_buffer.commit`은 제거
 - `input_audio_buffer.speech_started`와 `speech_stopped`를 개발 패널 이벤트 로그에 표시

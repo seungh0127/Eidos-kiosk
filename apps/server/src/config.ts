@@ -14,6 +14,7 @@ export const config = {
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   routingModel: process.env.OPENAI_ROUTING_MODEL ?? "gpt-5.6-luna",
   transcriptionModel: process.env.OPENAI_TRANSCRIBE_MODEL ?? "gpt-live-transcribe",
+  realtimeModel: process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1-mini",
   mockMode: process.env.EIDOS_MOCK === "true",
 };
 
