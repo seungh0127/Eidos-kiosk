@@ -20,6 +20,7 @@ export const config = {
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
   r2BucketName: process.env.R2_BUCKET_NAME ?? "",
+  photoShareBaseUrl: (process.env.PHOTO_SHARE_BASE_URL ?? "").replace(/\/+$/, ""),
   photoUrlTtlSeconds: (() => {
     const value = Number(process.env.PHOTO_URL_TTL_SECONDS ?? 3600);
     return Number.isFinite(value) ? Math.min(86_400, Math.max(300, value)) : 3600;

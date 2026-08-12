@@ -181,7 +181,7 @@ const REQUEST_EXAMPLES: string[][] = [
 const GREETING_TIMEOUT_MS = 15000;
 const PHOTO_ONBOARDING_MS = 2000;
 const PHOTO_CAPTURE_MS = 30000;
-const PHOTO_COUNTDOWN_MS = 3000;
+const PHOTO_COUNTDOWN_MS = 5000;
 const PHOTO_FLASH_MS = 260;
 const PHOTO_QR_DISPLAY_MS = 30000;
 const MOCK_TRANSCRIPTION_TEXT = "새로운 집으로 이사했는데 이삿짐을 정리하고 싶어";
@@ -1068,13 +1068,20 @@ export default function App() {
   }, [phase, resultPhotoStage, startPhotoFlow]);
 
   const handleFistCapture = useCallback(async () => {
-    if (phase !== "result" || resultPhotoStage !== "photo-capture" || photoCaptureBusyRef.current) return;
+    // resultPhotoStage isn't checked here — the real caller (PresenceDetector's
+    // onFist) is already gated to only fire while photoCaptureActive is true
+    // (fistCaptureEnabled={photoCaptureActive}), so re-checking it from this
+    // closure would just be a stale-state race waiting to happen for the one
+    // other caller, MockPanel's capture button, which deliberately forces the
+    // stage forward and calls this in the same tick — before that state
+    // update has re-rendered into a fresh closure here.
+    if (phase !== "result" || photoCaptureBusyRef.current) return;
     photoCaptureBusyRef.current = true;
     const captureAttempt = ++photoCaptureAttemptRef.current;
     if (resultStageTimerRef.current) window.clearTimeout(resultStageTimerRef.current);
     resultStageTimerRef.current = null;
     setResultPhotoStage("photo-countdown");
-    appendDebugLog("photo", "Fist → open hand confirmed · photo countdown started (3 seconds)");
+    appendDebugLog("photo", `Fist → open hand confirmed · photo countdown started (${Math.round(PHOTO_COUNTDOWN_MS / 1000)} seconds)`);
     try {
       await new Promise<void>((resolve) => {
         photoCountdownResolveRef.current = () => {
@@ -1110,12 +1117,24 @@ export default function App() {
         return { ...EMPTY_PHOTO_SHARE, previewUrl };
       });
       const response = await fetch("/api/photo", { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
-      const payload = await response.json().catch(() => ({})) as { downloadUrl?: string; expiresAt?: string; size?: number; objectKey?: string; error?: string };
+      const payload = await response.json().catch(() => ({})) as { shareUrl?: string; qrUrl?: string; downloadUrl?: string; expiresAt?: string; size?: number; objectKey?: string; error?: string };
       if (captureAttempt !== photoCaptureAttemptRef.current) return;
-      if (!response.ok || !payload.downloadUrl) throw new Error(payload.error || `Photo upload failed (${response.status})`);
-      const qrDataUrl = await QRCode.toDataURL(payload.downloadUrl, { errorCorrectionLevel: "M", margin: 2, width: 720, color: { dark: "#04121d", light: "#ffffff" } });
+      if (!response.ok || !payload.shareUrl) throw new Error(payload.error || `Photo upload failed (${response.status})`);
+      // The QR points at the styled share page (see photo-share-page.ts on
+      // the server), not the raw image — scanning it should land on a page
+      // that looks like the kiosk, not a bare JPEG.
+      const qrTarget = payload.qrUrl ?? payload.shareUrl;
+      const qrDataUrl = await QRCode.toDataURL(qrTarget, {
+        // The server returns a compact /p/... redirect instead of encoding
+        // the long R2 signature. Level L then produces the sparsest reliable
+        // QR matrix available for this short-lived exhibition link.
+        errorCorrectionLevel: "L",
+        margin: 1,
+        width: 640,
+        color: { dark: "#667279", light: "#ffffff" },
+      });
       if (captureAttempt !== photoCaptureAttemptRef.current) return;
-      setPhotoShare({ previewUrl, qrDataUrl, downloadUrl: payload.downloadUrl, expiresAt: payload.expiresAt ?? "", error: "" });
+      setPhotoShare({ previewUrl, qrDataUrl, downloadUrl: payload.downloadUrl ?? payload.shareUrl, expiresAt: payload.expiresAt ?? "", error: "" });
       setResultPhotoStage("photo-ready");
       appendDebugLog("photo", `Photo uploaded · ${payload.size ?? blob.size} bytes${payload.objectKey ? ` · ${payload.objectKey}` : ""} · temporary QR code ready`);
     } catch (cause) {
@@ -1131,7 +1150,7 @@ export default function App() {
         resetToIdle();
       }, PHOTO_QR_DISPLAY_MS);
     }
-  }, [appendDebugLog, phase, resetToIdle, resultPhotoStage]);
+  }, [appendDebugLog, phase, resetToIdle]);
 
   // Voice-trigger counterpart to the camera hand-wave: listens for a spoken
   // "안녕"/"안녕하세요" while the greeting card is showing, via the same
@@ -1457,6 +1476,16 @@ export default function App() {
       appendDebugLog("operator", "Face presence lost during mic calibration · keeping measurement active");
       return;
     }
+    if (
+      phase === "result" &&
+      (resultPhotoStage === "photo-countdown" ||
+        (resultPhotoStage === "photo-capture" && photoCaptureBusyRef.current))
+    ) {
+      // Starting the countdown and updating React state happen on adjacent
+      // frames. The busy ref also protects that very short transition window.
+      appendDebugLog("photo", "Face lost during 5-second countdown · keeping countdown active");
+      return;
+    }
     if (phase === "result" && (resultPhotoStage === "photo-uploading" || resultPhotoStage === "photo-ready" || resultPhotoStage === "photo-error")) {
       appendDebugLog("photo", "Face left after capture · keeping QR screen until its timer ends");
       return;
@@ -1577,28 +1606,42 @@ export default function App() {
     startPhotoFlow();
   }, [mockRequest, phase, result, resultPhotoStage, startPhotoFlow, submitAnalysis]);
   const mockPhotoCapture = useCallback(() => {
+    if (phase !== "result") return;
+    // Unlike a real fist gesture (which PresenceDetector only ever reports
+    // while already in photo-capture), this button should work from any
+    // photo stage for testing — jump the stage forward and clear whatever
+    // stage timer was pending, then invoke the same capture flow.
+    if (resultStageTimerRef.current) window.clearTimeout(resultStageTimerRef.current);
+    resultStageTimerRef.current = null;
+    photoCaptureBusyRef.current = false;
+    setResultPhotoStage("photo-capture");
     void handleFistCapture();
-  }, [handleFistCapture]);
+  }, [handleFistCapture, phase]);
   const introIntensity = introVisualIntensity(phase, faceTelemetry.stableMs, faceTelemetry.active);
   // Visitors naturally stand farther back to frame themselves (and anyone
   // joining them) for the photo, which shrinks their face in the camera
   // frame — loosen the area threshold and give a longer absence grace
   // period so that doesn't get misread as "visitor left" and reset to idle.
   const photoOnboardingActive = phase === "result" && resultPhotoStage === "photo-onboarding";
-  // Once the capture countdown is actually running, though, a face that's
-  // genuinely out of frame means the photo itself would be pointless — give
-  // it only a brief grace window, then reset.
   const photoCaptureActive = phase === "result" && resultPhotoStage === "photo-capture";
   const photoCountdownActive = phase === "result" && resultPhotoStage === "photo-countdown";
   const photoShareActive = phase === "result" && (resultPhotoStage === "photo-uploading" || resultPhotoStage === "photo-ready" || resultPhotoStage === "photo-error");
   const photoStageActive = photoOnboardingActive || photoCaptureActive || photoCountdownActive || photoShareActive;
+  // Once the countdown actually starts, a visitor posing with the robot can
+  // easily drift out of frame for a moment (leaning in, the fist gesture
+  // itself covering their face) without having actually left — so the
+  // grace window has to comfortably outlast the whole PHOTO_COUNTDOWN_MS
+  // countdown, not just cover a brief flicker like the shorter windows
+  // below. The +1500ms margin absorbs absentMs clock skew: presence can
+  // already be borderline the instant the countdown starts, not exactly 0.
+  const photoCaptureAbsentMs = PHOTO_COUNTDOWN_MS + 1500;
 
   if (GALLERY) return <StateGallery selectedRobotId={galleryRobotId} onSelectRobot={setGalleryRobotId} />;
 
   return (
     <main className={`kiosk kiosk-${phase} ${operatorOpen ? "kiosk-debug" : ""} ${screenRotated ? "kiosk-screen-rotated" : ""}`}>
       {resetFadeKey > 0 && <div key={resetFadeKey} className="reset-fade" aria-hidden="true" />}
-      <PresenceDetector mock={MOCK} enabled={phase !== "boot"} diagnostic={(operatorOpen || MOCK) && !photoStageActive} resetToken={presenceResetToken} cameraDeviceId={cameraDeviceId} handDetectionEnabled={MOCK || phase === "analyzing" || phase === "result"} handWaveEnabled={phase === "result" && resultPhotoStage === "greeting"} fistCaptureEnabled={photoCaptureActive} minFaceAreaRatio={photoStageActive ? 0.01 : undefined} presenceAbsentMs={photoShareActive ? 60000 : photoCaptureActive || photoCountdownActive ? 3000 : photoOnboardingActive ? 8000 : undefined} onPresence={handlePresence} onHandWave={handleHandWave} onFist={handleFistCapture} onStatus={handlePresenceStatus} onTelemetry={handleFaceTelemetry} onDevices={handleCameraDevices} onStream={setCameraStream} />
+      <PresenceDetector mock={MOCK} enabled={phase !== "boot"} diagnostic={(operatorOpen || MOCK) && !photoStageActive} resetToken={presenceResetToken} cameraDeviceId={cameraDeviceId} handDetectionEnabled={MOCK || phase === "analyzing" || phase === "result"} handWaveEnabled={phase === "result" && resultPhotoStage === "greeting"} fistCaptureEnabled={photoCaptureActive} minFaceAreaRatio={photoStageActive ? 0.01 : undefined} presenceAbsentMs={photoShareActive ? 60000 : photoCaptureActive || photoCountdownActive ? photoCaptureAbsentMs : photoOnboardingActive ? 8000 : undefined} onPresence={handlePresence} onHandWave={handleHandWave} onFist={handleFistCapture} onStatus={handlePresenceStatus} onTelemetry={handleFaceTelemetry} onDevices={handleCameraDevices} onStream={setCameraStream} />
       {phase === "boot" && <section className="screen screen-center"><p className="eyebrow">EIDOS</p><h1>Preparing the experience</h1></section>}
       {(phase === "idle" || phase === "presence" || phase === "realtime-connecting" || phase === "wake-listen" || phase === "request-listen") && <WelcomeScreen mode={phase === "request-listen" ? "request" : "prompt"} visualState={phase} initial={phase === "idle"} ready={introRevealed && phase === "wake-listen"} intensity={introIntensity} wakePromptAttention={phase === "wake-listen" && wakePromptAttention} requestPromptVisible={requestPromptVisible} requestNotice={phase === "request-listen" ? requestNotice : ""} requestText={requestText} micLevel={phase === "wake-listen" || phase === "request-listen" ? micLevel : 0} exampleMorphTrigger={exampleMorphTrigger} />}
       {phase === "analyzing" && <RobotLoadingScreen locked={loadingLocked} robotId={result?.robotId ?? null} />}
@@ -2176,20 +2219,15 @@ async function captureResultCard(card: HTMLElement | null): Promise<Blob> {
 }
 
 function PhotoSharePanel({ state, ready }: { state: PhotoShareState; ready: boolean }) {
+  const showQr = ready && Boolean(state.qrDataUrl);
   return <div className={`photo-share-panel ${ready ? "is-ready" : "is-error"}`} role="status" aria-live="polite">
-    {state.previewUrl && <img className="photo-share-preview" src={state.previewUrl} alt="촬영된 Eidos 사진" />}
-    <div className="photo-share-copy">
-      {ready && state.qrDataUrl ? <>
-        <p className="photo-share-title">사진이 완성되었어요</p>
-        <img className="photo-share-qr" src={state.qrDataUrl} alt="사진을 여는 QR 코드" />
-        <p className="photo-share-guide">QR 코드를 스캔해 사진을 저장하세요</p>
-        <p className="photo-share-expiry">링크는 1시간 동안 열 수 있습니다</p>
-      </> : <>
-        <p className="photo-share-title">사진이 촬영되었어요</p>
-        <p className="photo-share-guide">QR 공유 설정을 확인해주세요</p>
-        <p className="photo-share-expiry">{state.error}</p>
-      </>}
-    </div>
+    {showQr && <div className="photo-share-qr-badge">
+      <img className="photo-share-qr" src={state.qrDataUrl} alt="사진을 여는 QR 코드" />
+    </div>}
+    <p className="photo-share-guide">{showQr ? "QR 코드를 스캔해 사진을 저장할 수 있어요" : (state.error || "QR 공유 설정을 확인해주세요")}</p>
+    {state.previewUrl && <div className="photo-share-card">
+      <img className="photo-share-preview" src={state.previewUrl} alt="촬영된 Eidos 사진" />
+    </div>}
   </div>;
 }
 
@@ -2197,45 +2235,35 @@ function ResultScreen({ result, photoStage, photoShare = EMPTY_PHOTO_SHARE, phot
   const mp4Url = result.videoUrl.replace(/\.webm$/, ".mp4");
   const posterUrl = result.videoUrl.replace(/\.webm$/, ".webp");
   const photoActive = photoStage !== "card" && photoStage !== "greeting";
+  // Once there's an actual captured photo to show (PhotoSharePanel's own
+  // .photo-share-card), the live card behind it — still streaming the
+  // camera feed — is redundant and was visibly showing through the panel's
+  // translucent background. Stop rendering it for these stages instead of
+  // just layering the panel on top.
+  const photoShareStage = photoStage === "photo-uploading" || photoStage === "photo-ready" || photoStage === "photo-error";
   const cardClass = `result-card ${photoActive ? "result-card-flipped" : ""}`;
   return <section className={`screen result-screen result-screen-stage-${photoStage}`}>
     {photoActive && <PhotoCaptureAmbient stage={photoStage} />}
-    <div className="result-card-wrapper">
+    {!photoShareStage && <div className="result-card-wrapper">
       <article className={cardClass} aria-label={`${result.displayName} ${result.title}`}>
         <ResultCardFrontFace result={result} videoUrl={result.videoUrl} mp4Url={mp4Url} posterUrl={posterUrl} />
         <ResultCardBackFace result={result} videoUrl={result.videoUrl} mp4Url={mp4Url} posterUrl={posterUrl} active={photoActive} cameraStream={cameraStream} mock={mock} robotCardOffset={robotCardOffset} onCaptureSource={onCaptureSource} />
       </article>
-    </div>
+    </div>}
     <div className={`result-orb ${photoActive ? "result-orb-hidden" : ""}`}><Orb /></div>
     {photoStage === "greeting" && <p className="result-greeting t-shimmer" data-text="당신의 Eidos에게 인사하세요">당신의 Eidos에게 인사하세요</p>}
     {photoStage === "photo-onboarding" && <div className="photo-onboarding" role="status" aria-live="polite">
       <div className="photo-onboarding-content">
-        <p className="photo-onboarding-countdown">주먹을 쥐었다 펴면 사진이 촬영됩니다</p>
+        <p className="photo-onboarding-countdown">주먹을 쥐었다 펴면 촬영이 시작돼요.</p>
         <p className="photo-onboarding-title">Eidos와 특별한 한 장을 남겨볼까요?</p>
       </div>
     </div>}
-    {photoStage === "photo-capture" && <PhotoStageTimer />}
-    {photoStage === "photo-capture" && <p className="photo-capture-prompt t-shimmer" data-text="주먹을 쥐었다 펴면 사진이 촬영됩니다">주먹을 쥐었다 펴면 사진이 촬영됩니다</p>}
+    {photoStage === "photo-capture" && <p className="photo-capture-prompt t-shimmer" data-text="주먹을 쥐었다 펴면 촬영이 시작돼요.">주먹을 쥐었다 펴면 촬영이 시작돼요.</p>}
     {photoStage === "photo-countdown" && <PhotoCountdown />}
-    {photoStage === "photo-countdown" && <p className="photo-capture-prompt photo-countdown-prompt">잠시만요</p>}
     {photoStage === "photo-uploading" && <div className="photo-uploading" role="status"><span className="photo-uploading-spinner" /><p>사진을 준비하고 있어요</p></div>}
     {(photoStage === "photo-ready" || photoStage === "photo-error") && <PhotoSharePanel state={photoShare} ready={photoStage === "photo-ready"} />}
     {photoFlashVisible && <div className="photo-capture-flash" aria-hidden="true" />}
   </section>;
-}
-
-/** Whole-second countdown shown above the caption during the capture window. */
-function PhotoStageTimer() {
-  const [remaining, setRemaining] = useState(PHOTO_CAPTURE_MS);
-  useEffect(() => {
-    // Wall-clock ticks rather than requestAnimationFrame: rAF is paused while
-    // the page is not painting, which would freeze the readout.
-    const startedAt = Date.now();
-    setRemaining(PHOTO_CAPTURE_MS);
-    const id = window.setInterval(() => setRemaining(Math.max(0, PHOTO_CAPTURE_MS - (Date.now() - startedAt))), 100);
-    return () => window.clearInterval(id);
-  }, []);
-  return <div className="photo-stage-timer" role="timer" aria-live="off">{Math.ceil(remaining / 1000)}</div>;
 }
 
 /** A short, explicit countdown gives the visitor time to hold the pose. */
@@ -2249,7 +2277,7 @@ function PhotoCountdown() {
     }, 50);
     return () => window.clearInterval(id);
   }, []);
-  const count = Math.min(3, Math.max(1, Math.ceil(remaining / 1000)));
+  const count = Math.min(PHOTO_COUNTDOWN_MS / 1000, Math.max(1, Math.ceil(remaining / 1000)));
   return <div className="photo-countdown" role="status" aria-live="assertive" aria-label={`사진 촬영까지 ${count}초`}><span key={count}>{count}</span></div>;
 }
 
@@ -2506,6 +2534,8 @@ function StateGallery({ selectedRobotId, onSelectRobot }: { selectedRobotId: num
   const [savedOffsets, setSavedOffsets] = useState<RobotCardOffsets>(DEFAULT_ROBOT_CARD_OFFSETS);
   const [draftOffsets, setDraftOffsets] = useState<RobotCardOffsets>(DEFAULT_ROBOT_CARD_OFFSETS);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [cardRadiusX, setCardRadiusX] = useState(8);
+  const [cardRadiusY, setCardRadiusY] = useState(5);
 
   useEffect(() => {
     fetch("/api/robot-card-offsets").then((response) => (response.ok ? response.json() as Promise<{ offsets?: RobotCardOffsets }> : null)).then((data) => {
@@ -2559,6 +2589,21 @@ function StateGallery({ selectedRobotId, onSelectRobot }: { selectedRobotId: num
       <button type="button" role="tab" aria-selected={galleryView === "info"} className={galleryView === "info" ? "selected" : ""} onClick={() => setGalleryView("info")}>Info card (front)</button>
       <button type="button" role="tab" aria-selected={galleryView === "photo"} className={galleryView === "photo" ? "selected" : ""} onClick={() => setGalleryView("photo")}>Photo card · position &amp; size (back)</button>
     </div>
+    <div className="gallery-offset-panel">
+      <h2>Photo card corner radius</h2>
+      <p>CSS value: {cardRadiusX.toFixed(1)}% / {cardRadiusY.toFixed(1)}%</p>
+      <div className="gallery-offset-row">
+        <label>Radius X % <span>{cardRadiusX.toFixed(1)}</span>
+          <input type="range" min="0" max="20" step="0.1" value={cardRadiusX} onChange={(event) => setCardRadiusX(Number(event.target.value))} />
+        </label>
+        <label>Radius Y % <span>{cardRadiusY.toFixed(1)}</span>
+          <input type="range" min="0" max="20" step="0.1" value={cardRadiusY} onChange={(event) => setCardRadiusY(Number(event.target.value))} />
+        </label>
+      </div>
+      <div className="gallery-offset-actions">
+        <button type="button" onClick={() => { setCardRadiusX(8); setCardRadiusY(5); }}>Reset to 8% / 5%</button>
+      </div>
+    </div>
     {galleryView === "photo" && <div className="gallery-offset-panel">
       <div className="gallery-offset-row">
         <label>Scale <span>{draft.scale.toFixed(2)}</span>
@@ -2579,7 +2624,7 @@ function StateGallery({ selectedRobotId, onSelectRobot }: { selectedRobotId: num
         {saveStatus === "error" && <span className="gallery-offset-status status-error">Save failed — is the server running?</span>}
       </div>
     </div>}
-    <section className="gallery-result"><ResultScreen result={result} photoStage={galleryView === "photo" ? "photo-capture" : "card"} cameraStream={null} mock robotCardOffset={draft} /></section>
+    <section className="gallery-result" style={{ "--photo-card-radius-x": `${cardRadiusX}%`, "--photo-card-radius-y": `${cardRadiusY}%` } as CSSProperties}><ResultScreen result={result} photoStage={galleryView === "photo" ? "photo-capture" : "card"} cameraStream={null} mock robotCardOffset={draft} /></section>
     <section className="gallery-grid">{ROBOT_IDS.map((id) => <button className={id === robotId ? "selected" : ""} type="button" key={id} onClick={() => onSelectRobot(id)}><img src={`/media/robot-${String(id).padStart(2, "0")}.webp`} alt={`Robot ${id}`} /><span>Robot {String(id).padStart(2, "0")}</span></button>)}</section>
   </main>;
 }

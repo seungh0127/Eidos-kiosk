@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import path from "node:path";
+import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,7 @@ import type { AnalyzeRequest, RobotCardOffsets } from "@eidos/shared";
 import { config, assertValidConfig, photoSharingConfigured } from "./config.js";
 import { EidosDatabase } from "./db.js";
 import { AnalysisService, mockAnalyze } from "./analysis.js";
-import { uploadVisitorPhoto } from "./photo-storage.js";
+import { resolveVisitorPhotoShare, uploadVisitorPhoto } from "./photo-storage.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDir, "../../..");
@@ -18,6 +19,37 @@ const dataDir = path.join(projectRoot, "data");
 const database = new EidosDatabase(path.join(dataDir, "eidos.sqlite"));
 const REALTIME_UPSTREAM_TIMEOUT_MS = 25_000;
 const robotCardOffsetsPath = path.join(dataDir, "robot-card-offsets.json");
+
+function firstLanIpv4Address(): string | undefined {
+  const interfaces = networkInterfaces();
+  const names = Object.keys(interfaces).sort((a, b) => {
+    const rank = (name: string) => name === "en0" ? 0 : /^en\d+$/.test(name) ? 1 : /^(eth|wlan)\d+$/.test(name) ? 2 : 3;
+    return rank(a) - rank(b) || a.localeCompare(b);
+  });
+  for (const name of names) {
+    if (/^(lo|utun|bridge|awdl|llw)/.test(name)) continue;
+    const addresses = interfaces[name];
+    for (const address of addresses ?? []) {
+      if (address.family === "IPv4" && !address.internal && !address.address.startsWith("169.254.")) return address.address;
+    }
+  }
+  return undefined;
+}
+
+function photoShareBaseUrl(req: express.Request): string {
+  if (config.photoShareBaseUrl) return config.photoShareBaseUrl;
+
+  const requestHost = req.get("host") ?? `127.0.0.1:${config.port}`;
+  const requestHostname = requestHost.replace(/^\[/, "").replace(/\].*$/, "").split(":")[0]?.toLowerCase();
+  if (requestHostname && requestHostname !== "127.0.0.1" && requestHostname !== "localhost") {
+    return `${req.protocol}://${requestHost}`;
+  }
+
+  // The kiosk itself normally opens 127.0.0.1. A phone cannot resolve that
+  // address, so use the Mac's LAN address for the compact QR redirect.
+  const lanAddress = firstLanIpv4Address();
+  return lanAddress ? `http://${lanAddress}:${config.port}` : `${req.protocol}://${requestHost}`;
+}
 
 function readRobotCardOffsets(): RobotCardOffsets {
   try {
@@ -82,10 +114,28 @@ app.post("/api/photo", express.raw({ type: "image/jpeg", limit: "2mb" }), async 
   if (image.length < 10_000) return res.status(400).json({ error: "The captured photo is empty or too small." });
   try {
     const uploaded = await uploadVisitorPhoto(image);
-    res.status(201).json({ downloadUrl: uploaded.downloadUrl, expiresAt: uploaded.expiresAt, size: image.length, objectKey: uploaded.objectKey });
+    const qrUrl = new URL(uploaded.sharePath, `${photoShareBaseUrl(req)}/`).toString();
+    res.status(201).json({ shareUrl: uploaded.shareUrl, qrUrl, downloadUrl: uploaded.downloadUrl, expiresAt: uploaded.expiresAt, size: image.length, objectKey: uploaded.objectKey });
   } catch (error) {
     console.error("[photo] upload failed", error);
     res.status(502).json({ error: "The photo could not be uploaded." });
+  }
+});
+
+app.get("/p/:date/:expires/:shareId/:signature", async (req, res) => {
+  try {
+    const target = await resolveVisitorPhotoShare(
+      String(req.params.date),
+      String(req.params.expires),
+      String(req.params.shareId),
+      String(req.params.signature),
+    );
+    res.setHeader("Cache-Control", "no-store");
+    if (!target) return res.status(410).send("This Eidos photo link has expired.");
+    return res.redirect(302, target);
+  } catch (error) {
+    console.error("[photo] short share link failed", error);
+    return res.status(502).send("The Eidos photo is temporarily unavailable.");
   }
 });
 

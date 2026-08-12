@@ -32,6 +32,11 @@ fi
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
+# The QR code contains a short redirect served by this Mac. Listen on the
+# local network so a visitor's phone on the same Wi-Fi can open it; Chrome
+# still opens the kiosk through 127.0.0.1 below.
+export HOST="${EIDOS_SERVER_HOST:-0.0.0.0}"
+
 if [[ ! -d node_modules ]]; then
   npm install
 fi
