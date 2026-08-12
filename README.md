@@ -64,7 +64,7 @@ The browser never receives the permanent OpenAI API key. The server creates a sh
 - [Exhibition operations and recovery](docs/EXHIBITION-OPERATIONS.md)
 - [Frontend handoff](docs/FRONTEND-HANDOFF.md)
 - [Security and privacy](docs/SECURITY.md)
-- Photo capture: open-palm greeting starts the photo stage; hold `Closed_Fist` for about 0.55 seconds to start a visible `3 · 2 · 1` countdown. A brief screen flash marks the capture moment. The result is compressed to JPEG, uploaded to R2 when configured, and shown as a QR for one hour.
+- Photo capture: open-palm greeting starts the photo stage; make a `Closed_Fist` for about 0.18 seconds, then open the hand again within 1.5 seconds to start a visible `3 · 2 · 1` countdown. A brief screen flash marks the capture moment. The result is compressed to JPEG, uploaded to R2 when configured, and shown as a QR for one hour.
 
 ## Operator controls
 

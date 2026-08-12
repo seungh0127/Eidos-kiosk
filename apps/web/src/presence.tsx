@@ -63,7 +63,13 @@ const WAVE_DIRECTION_DELTA = 0.01;
 const WAVE_MIN_DIRECTION_CHANGES = 1;
 const WAVE_MIN_SPAN = 0.11;
 const WAVE_MIN_TRAVELLED = 0.2;
-const FIST_HOLD_MS = 550;
+// Photo gesture is a quick close -> open sequence rather than a long closed
+// fist hold. The detector runs at roughly 10fps, so the close arm and open
+// confirmation are intentionally short but still require more than one
+// accidental classification to proceed.
+const FIST_ARM_MS = 180;
+const FIST_OPEN_CONFIRM_MS = 100;
+const FIST_SEQUENCE_WINDOW_MS = 1500;
 const FIST_MIN_CONFIDENCE = 0.65;
 
 export type FaceTelemetry = {
@@ -80,8 +86,8 @@ export type FaceTelemetry = {
   /** Live open-hand diagnostics, present only while a hand landmarker is
    *  running and handWaveEnabled — lets the real kiosk camera's actual
    *  numbers be read against the wave/hold thresholds below instead of
-   *  guessing why a hand wasn't recognized. Whichever trigger — wave or
-   *  hold — reaches its threshold first fires onHandWave. */
+   *  guessing why a hand wasn't recognized. The open-hand wave/hold trigger
+   *  fires onHandWave; the separate fist-to-open trigger fires onFist. */
   hand?: {
     open: boolean;
     palmWidth: number;
@@ -93,7 +99,10 @@ export type FaceTelemetry = {
     directionChanges: number;
     gesture?: string;
     gestureScore?: number;
+    /** Time the recognizer has continuously seen a qualifying closed fist. */
     fistHeldMs?: number;
+    /** A qualifying fist has been armed and is waiting for an open hand. */
+    fistArmed?: boolean;
   };
 };
 
@@ -271,7 +280,17 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
     let smoothedHandX: number | undefined;
     const handHistory: Array<{ x: number; at: number }> = [];
     let fistSince = 0;
+    let fistOpenSince = 0;
+    let fistArmed = false;
+    let fistAwaitingRelease = false;
     let fistCooldownUntil = 0;
+
+    const resetFistTracking = () => {
+      fistSince = 0;
+      fistOpenSince = 0;
+      fistArmed = false;
+      fistAwaitingRelease = false;
+    };
 
     const resetTracking = () => {
       active = false;
@@ -339,6 +358,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
           if (handledResetToken !== resetTokenRef.current) {
             handledResetToken = resetTokenRef.current;
             resetTracking();
+            resetFistTracking();
           }
           animationFrame = requestAnimationFrame(tick);
           if (!detector || !videoRef.current || timestamp - lastDetection < 100 || videoRef.current.readyState < 2) return;
@@ -388,11 +408,15 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
             const candidate = candidates[0];
             setHandLandmarks(candidate?.landmarks);
 
-            const closedFist = fistCaptureEnabledRef.current && candidate?.gesture === "Closed_Fist" && candidate.gestureScore >= FIST_MIN_CONFIDENCE;
+            const fistCaptureEnabled = fistCaptureEnabledRef.current;
+            if (!fistCaptureEnabled) resetFistTracking();
+            const closedFist = fistCaptureEnabled && candidate?.gesture === "Closed_Fist" && candidate.gestureScore >= FIST_MIN_CONFIDENCE;
+            const openHand = fistCaptureEnabled && Boolean(candidate?.open);
             const fistHeldMs = closedFist && fistSince ? timestamp - fistSince : 0;
-            if (candidate && closedFist && !handWaveEnabledRef.current) {
+            const fistSequenceMs = fistSince ? timestamp - fistSince : 0;
+            if (candidate && fistCaptureEnabled && !handWaveEnabledRef.current) {
               handDiag = {
-                open: false,
+                open: Boolean(candidate.open),
                 palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]),
                 heldMs: 0,
                 span: 0,
@@ -401,21 +425,50 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
                 gesture: candidate.gesture,
                 gestureScore: candidate.gestureScore,
                 fistHeldMs,
+                fistArmed,
               };
             }
             if (closedFist) {
-              if (!fistSince) {
-                fistSince = timestamp;
-                onStatusRef.current("Closed fist detected · hold to take photo");
+              if (fistAwaitingRelease) {
+                // A fist that timed out must be released before another
+                // close -> open sequence can begin.
+              } else {
+                if (!fistSince) {
+                  fistSince = timestamp;
+                  fistOpenSince = 0;
+                  fistArmed = false;
+                  onStatusRef.current("Closed fist detected · open hand to capture");
+                }
+                fistOpenSince = 0;
+                if (!fistArmed && timestamp - fistSince >= FIST_ARM_MS) {
+                  fistArmed = true;
+                  onStatusRef.current("Closed fist armed · open hand to capture");
+                }
               }
-              if (timestamp - fistSince >= FIST_HOLD_MS && timestamp >= fistCooldownUntil) {
+            } else if (fistAwaitingRelease) {
+              // The timed-out fist has now been released; the next fist can
+              // start a fresh gesture sequence.
+              resetFistTracking();
+            } else if (fistArmed && openHand && fistSequenceMs <= FIST_SEQUENCE_WINDOW_MS) {
+              if (!fistOpenSince) {
+                fistOpenSince = timestamp;
+                onStatusRef.current("Fist release detected · confirming capture");
+              }
+              if (timestamp - fistOpenSince >= FIST_OPEN_CONFIRM_MS && timestamp >= fistCooldownUntil) {
                 fistCooldownUntil = timestamp + 3500;
-                fistSince = 0;
-                onStatusRef.current("Closed fist confirmed · taking photo");
+                resetFistTracking();
+                onStatusRef.current("Fist → open hand confirmed · taking photo");
                 onFistRef.current();
               }
-            } else {
+            } else if (fistSince && fistSequenceMs > FIST_SEQUENCE_WINDOW_MS) {
               fistSince = 0;
+              fistOpenSince = 0;
+              fistArmed = false;
+              fistAwaitingRelease = true;
+              if (fistCaptureEnabled) onStatusRef.current("Fist gesture timed out · try close then open again");
+            } else if (openHand) {
+              // Opening without first arming a fist is not a photo gesture.
+              resetFistTracking();
             }
 
             if (!handWaveEnabledRef.current) {
@@ -453,7 +506,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
                 if (direction) previousDirection = direction;
               }
               const span = spanMax - spanMin;
-              handDiag = { open: true, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs, span, travelled, directionChanges, gesture: candidate.gesture, gestureScore: candidate.gestureScore, fistHeldMs };
+              handDiag = { open: true, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs, span, travelled, directionChanges, gesture: candidate.gesture, gestureScore: candidate.gestureScore, fistHeldMs, fistArmed };
 
               const waveTriggered = handHistory.length >= WAVE_MIN_SAMPLES
                 && directionChanges >= WAVE_MIN_DIRECTION_CHANGES && span >= WAVE_MIN_SPAN && travelled >= WAVE_MIN_TRAVELLED;
@@ -479,7 +532,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
               smoothedHandX = undefined;
               if (handHistory.length) handHistory.splice(0, Math.max(0, handHistory.length - 3));
               handDiag = candidate
-                ? { open: false, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs: openHandSince ? timestamp - openHandSince : 0, span: 0, travelled: 0, directionChanges: 0, gesture: candidate.gesture, gestureScore: candidate.gestureScore, fistHeldMs: fistSince ? timestamp - fistSince : 0 }
+                ? { open: false, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs: openHandSince ? timestamp - openHandSince : 0, span: 0, travelled: 0, directionChanges: 0, gesture: candidate.gesture, gestureScore: candidate.gestureScore, fistHeldMs: fistSince ? timestamp - fistSince : 0, fistArmed }
                 : undefined;
             }
           } else if (!gestureRecognizer) {

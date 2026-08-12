@@ -1074,7 +1074,7 @@ export default function App() {
     if (resultStageTimerRef.current) window.clearTimeout(resultStageTimerRef.current);
     resultStageTimerRef.current = null;
     setResultPhotoStage("photo-countdown");
-    appendDebugLog("photo", "Closed fist confirmed · photo countdown started (3 seconds)");
+    appendDebugLog("photo", "Fist → open hand confirmed · photo countdown started (3 seconds)");
     try {
       await new Promise<void>((resolve) => {
         photoCountdownResolveRef.current = () => {
@@ -1747,11 +1747,11 @@ function DiagnosticPanel({
     </section>
 
     <section className="diagnostic-section">
-      <div className="diagnostic-kicker">HAND WAVE / HOLD</div>
+      <div className="diagnostic-kicker">HAND GESTURES</div>
       <div className="diagnostic-row"><span>Palm</span><strong className={faceTelemetry.hand?.open ? "status-good" : "status-idle"}>{faceTelemetry.hand ? (faceTelemetry.hand.open ? "OPEN" : "not open") : "no hand"}</strong></div>
       <div className="diagnostic-row"><span>Gesture model</span><strong>{faceTelemetry.hand?.gesture ?? "—"} {faceTelemetry.hand?.gestureScore ? `· ${faceTelemetry.hand.gestureScore.toFixed(2)}` : ""}</strong></div>
-      <div className="diagnostic-grid"><span>Palm width <b>{(faceTelemetry.hand?.palmWidth ?? 0).toFixed(3)}</b></span><span>Open held <b>{((faceTelemetry.hand?.heldMs ?? 0) / 1000).toFixed(1)}s / 5.0s</b></span><span>Fist held <b>{((faceTelemetry.hand?.fistHeldMs ?? 0) / 1000).toFixed(1)}s / .55s</b></span><span>Span <b>{(faceTelemetry.hand?.span ?? 0).toFixed(3)}</b></span><span>Travelled <b>{(faceTelemetry.hand?.travelled ?? 0).toFixed(3)}</b></span><span>Dir. changes <b>{faceTelemetry.hand?.directionChanges ?? 0}</b></span></div>
-      <small className="diagnostic-muted">Photo trigger: Closed_Fist ≥ .65 held for .55s · wave: palm hold ≥ 5.0s OR (span ≥ .11 · travelled ≥ .2 · dir. changes ≥ 1)</small>
+      <div className="diagnostic-grid"><span>Palm width <b>{(faceTelemetry.hand?.palmWidth ?? 0).toFixed(3)}</b></span><span>Open held <b>{((faceTelemetry.hand?.heldMs ?? 0) / 1000).toFixed(1)}s / 5.0s</b></span><span>Fist held <b>{((faceTelemetry.hand?.fistHeldMs ?? 0) / 1000).toFixed(1)}s / .18s</b></span><span>Fist armed <b>{faceTelemetry.hand?.fistArmed ? "yes" : "no"}</b></span><span>Span <b>{(faceTelemetry.hand?.span ?? 0).toFixed(3)}</b></span><span>Travelled <b>{(faceTelemetry.hand?.travelled ?? 0).toFixed(3)}</b></span><span>Dir. changes <b>{faceTelemetry.hand?.directionChanges ?? 0}</b></span></div>
+      <small className="diagnostic-muted">Photo trigger: Closed_Fist ≥ .65 for .18s → open hand within 1.5s · wave: palm hold ≥ 5.0s OR (span ≥ .11 · travelled ≥ .2 · dir. changes ≥ 1)</small>
     </section>
 
     <section className="diagnostic-section">
@@ -1881,7 +1881,7 @@ function MockPanel({ mockRequest, onMockRequestChange, onWake, onPreviewTranscri
         <button type="button" onClick={onAnalyze}>Analyze request</button>
         <button type="button" onClick={onAnalyzeFail}>Simulate unroutable request</button>
         <button type="button" onClick={onPhotoWave}>Wave with open hand</button>
-        <button type="button" onClick={onPhotoCapture}>Capture photo (closed fist)</button>
+        <button type="button" onClick={onPhotoCapture}>Capture photo (fist → open)</button>
         <button type="button" onClick={onReset}>Reset visitor</button>
         <button type="button" onClick={onGallery}>Open state gallery</button>
       </div>
@@ -2210,12 +2210,12 @@ function ResultScreen({ result, photoStage, photoShare = EMPTY_PHOTO_SHARE, phot
     {photoStage === "greeting" && <p className="result-greeting t-shimmer" data-text="당신의 Eidos에게 인사하세요">당신의 Eidos에게 인사하세요</p>}
     {photoStage === "photo-onboarding" && <div className="photo-onboarding" role="status" aria-live="polite">
       <div className="photo-onboarding-content">
-        <p className="photo-onboarding-countdown">주먹을 쥐면 사진이 촬영됩니다</p>
+        <p className="photo-onboarding-countdown">주먹을 쥐었다 펴면 사진이 촬영됩니다</p>
         <p className="photo-onboarding-title">Eidos와 특별한 한 장을 남겨볼까요?</p>
       </div>
     </div>}
     {photoStage === "photo-capture" && <PhotoStageTimer />}
-    {photoStage === "photo-capture" && <p className="photo-capture-prompt t-shimmer" data-text="주먹을 쥐면 사진이 촬영됩니다">주먹을 쥐면 사진이 촬영됩니다</p>}
+    {photoStage === "photo-capture" && <p className="photo-capture-prompt t-shimmer" data-text="주먹을 쥐었다 펴면 사진이 촬영됩니다">주먹을 쥐었다 펴면 사진이 촬영됩니다</p>}
     {photoStage === "photo-countdown" && <PhotoCountdown />}
     {photoStage === "photo-countdown" && <p className="photo-capture-prompt photo-countdown-prompt">잠시만요</p>}
     {photoStage === "photo-uploading" && <div className="photo-uploading" role="status"><span className="photo-uploading-spinner" /><p>사진을 준비하고 있어요</p></div>}

@@ -39,11 +39,13 @@ The design layer should keep result video playback muted, looped and `playsInlin
 
 The result photo flow is `greeting → photo-onboarding → photo-capture →
 photo-countdown → photo-uploading → photo-ready/photo-error`. MediaPipe
-`GestureRecognizer` reports `Closed_Fist`; the capture callback fires after a
-score of at least `.65` has been held for approximately `.55s`. The UI then
-holds the visitor in a visible three-second `3 · 2 · 1` countdown before the
-actual capture and shows a short screen flash at the capture moment. Opening
-the fist during the countdown does not cancel the already-confirmed shot. The browser captures the actual
+`GestureRecognizer` reports `Closed_Fist`; a score of at least `.65` held for
+approximately `.18s` arms the gesture. The capture callback fires only when
+the visitor opens the hand again within `1.5s`, so holding a fist by itself no
+longer takes a photo. The UI then holds the visitor in a visible three-second
+`3 · 2 · 1` countdown before the actual capture and shows a short screen flash
+at the capture moment. Opening the hand during the countdown does not cancel
+the already-confirmed shot. The browser captures the actual
 result-card back-face DOM with `html-to-image`. Before capture, each live video
 is replaced in the temporary clone by a current canvas frame, preserving the
 camera mirror, robot alpha frame, card header, and per-robot offset without

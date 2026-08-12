@@ -18,7 +18,8 @@ On the first run, allow Chrome to use the camera and microphone. The camera feed
 ## Photo and QR flow
 
 After the result card, an open-palm wave (or the spoken greeting) opens the
-photo stage. The visitor holds a closed fist for about 0.55 seconds. The
+photo stage. The visitor makes a closed fist for about 0.18 seconds and then
+opens the hand again within 1.5 seconds. The
 browser captures the result-card DOM as a portrait JPEG. Before encoding, the
 camera and robot video elements are frozen to their current frames, so the
 image contains the same mirrored camera view, robot overlay, header, and card
