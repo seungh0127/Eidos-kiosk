@@ -8,6 +8,7 @@ Eidos is a local exhibition kiosk that detects a visitor, listens for “Hi, Eid
 - Google Chrome for kiosk mode
 - FFmpeg for robot media conversion
 - An OpenAI API key for live mode
+- A private Cloudflare R2 bucket and scoped R2 API token if QR photo sharing is enabled
 
 ## Local setup
 
@@ -17,6 +18,11 @@ cp .env.example .env
 # Add OPENAI_API_KEY to .env
 npm run dev
 ```
+
+Photo sharing is optional for development. To enable it, add the four `R2_*`
+and `PHOTO_URL_TTL_SECONDS` values from `.env.example` to the root `.env`.
+The bucket stays private: the local server uploads a compressed JPEG and gives
+the browser a temporary signed download URL, which is encoded into the QR.
 
 The Vite UI is available at `http://localhost:5173`; the local API runs at `http://127.0.0.1:3000`.
 
@@ -58,6 +64,7 @@ The browser never receives the permanent OpenAI API key. The server creates a sh
 - [Exhibition operations and recovery](docs/EXHIBITION-OPERATIONS.md)
 - [Frontend handoff](docs/FRONTEND-HANDOFF.md)
 - [Security and privacy](docs/SECURITY.md)
+- Photo capture: open-palm greeting starts the photo stage; hold `Closed_Fist` for about 0.55 seconds to start a visible `3 · 2 · 1` countdown. A brief screen flash marks the capture moment. The result is compressed to JPEG, uploaded to R2 when configured, and shown as a QR for one hour.
 
 ## Operator controls
 

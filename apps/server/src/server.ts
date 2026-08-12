@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { AnalyzeRequest, RobotCardOffsets } from "@eidos/shared";
-import { config, assertValidConfig } from "./config.js";
+import { config, assertValidConfig, photoSharingConfigured } from "./config.js";
 import { EidosDatabase } from "./db.js";
 import { AnalysisService, mockAnalyze } from "./analysis.js";
+import { uploadVisitorPhoto } from "./photo-storage.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDir, "../../..");
@@ -74,6 +75,19 @@ function availableRobotIds(): number[] {
 const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "32kb" }));
+
+app.post("/api/photo", express.raw({ type: "image/jpeg", limit: "2mb" }), async (req, res) => {
+  if (!photoSharingConfigured) return res.status(503).json({ error: "Photo sharing is not configured on this kiosk." });
+  const image = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (image.length < 10_000) return res.status(400).json({ error: "The captured photo is empty or too small." });
+  try {
+    const uploaded = await uploadVisitorPhoto(image);
+    res.status(201).json({ downloadUrl: uploaded.downloadUrl, expiresAt: uploaded.expiresAt, size: image.length, objectKey: uploaded.objectKey });
+  } catch (error) {
+    console.error("[photo] upload failed", error);
+    res.status(502).json({ error: "The photo could not be uploaded." });
+  }
+});
 
 app.post("/api/realtime/session", async (req, res) => {
   if (config.mockMode) return res.status(204).end();
@@ -249,6 +263,7 @@ app.get("/api/runtime", (_req, res) => {
     availableRobotIds: ids,
     models: { routing: config.routingModel, transcription: config.transcriptionModel, realtime: config.realtimeModel },
     mockMode: config.mockMode,
+    photoSharingConfigured,
   });
 });
 
@@ -258,6 +273,7 @@ app.get("/api/operator/status", (_req, res) => {
     ok: config.mockMode || Boolean(config.openAiApiKey),
     database: "ok",
     openAiConfigured: Boolean(config.openAiApiKey),
+    photoSharingConfigured,
     assetsReady: ids.length === 18,
     assetCount: ids.length,
     latestError: database.latestError(),

@@ -15,6 +15,35 @@ On the first run, allow Chrome to use the camera and microphone. The camera feed
 - Set `VITE_EIDOS_DEBUG=false` for the final presentation layout; `Ctrl+Option+E` still opens the panel when needed.
 - `?mock&gallery` opens the design handoff gallery without camera or API access.
 
+## Photo and QR flow
+
+After the result card, an open-palm wave (or the spoken greeting) opens the
+photo stage. The visitor holds a closed fist for about 0.55 seconds. The
+browser captures the result-card DOM as a portrait JPEG. Before encoding, the
+camera and robot video elements are frozen to their current frames, so the
+image contains the same mirrored camera view, robot overlay, header, and card
+styling visible on the kiosk. The compressed image is then sent to the local
+server. If R2 is configured, the server returns a one-hour signed URL and the
+screen shows its QR code. The image is not written to the kiosk disk.
+
+For a live exhibition, configure a private R2 bucket and a token scoped only
+to that bucket's Object Read and Object Write permissions. Put the values in
+the root `.env`:
+
+```dotenv
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET_NAME=eidos
+PHOTO_URL_TTL_SECONDS=3600
+```
+
+Do not enable public bucket access. Add a bucket lifecycle rule to delete
+`eidos-photos/` objects after one day; the signed URL itself expires after the
+configured TTL. The operator panel reports `R2 ready` or `not configured`.
+Without R2, the photo preview still renders locally but the QR stage reports
+the missing configuration and returns to idle after its timer.
+
 The counter increases only after a valid analysis result is written. Reset, timeout, API failure and preview sessions do not increase it. Session metadata is pruned after 30 days.
 
 ## Recovery

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FaceDetector, FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
+import { FaceDetector, FilesetResolver, GestureRecognizer } from "@mediapipe/tasks-vision";
 
 type PresenceProps = {
   mock: boolean;
@@ -9,8 +9,10 @@ type PresenceProps = {
   cameraDeviceId: string;
   handDetectionEnabled: boolean;
   handWaveEnabled: boolean;
+  fistCaptureEnabled: boolean;
   onPresence: (present: boolean) => void;
   onHandWave: () => void;
+  onFist: () => void;
   onStatus: (status: string) => void;
   onTelemetry: (telemetry: FaceTelemetry) => void;
   onDevices: (devices: CameraDevice[]) => void;
@@ -61,6 +63,8 @@ const WAVE_DIRECTION_DELTA = 0.01;
 const WAVE_MIN_DIRECTION_CHANGES = 1;
 const WAVE_MIN_SPAN = 0.11;
 const WAVE_MIN_TRAVELLED = 0.2;
+const FIST_HOLD_MS = 550;
+const FIST_MIN_CONFIDENCE = 0.65;
 
 export type FaceTelemetry = {
   camera: "disabled" | "requesting" | "ready" | "error" | "mock";
@@ -87,6 +91,9 @@ export type FaceTelemetry = {
     span: number;
     travelled: number;
     directionChanges: number;
+    gesture?: string;
+    gestureScore?: number;
+    fistHeldMs?: number;
   };
 };
 
@@ -186,7 +193,7 @@ function handPalmCenter(landmarks: HandPoint[]): number {
   return (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5;
 }
 
-export function PresenceDetector({ mock, enabled, diagnostic, resetToken, cameraDeviceId, handDetectionEnabled, handWaveEnabled, onPresence, onHandWave, onStatus, onTelemetry, onDevices, onStream, minFaceAreaRatio, presenceAbsentMs }: PresenceProps) {
+export function PresenceDetector({ mock, enabled, diagnostic, resetToken, cameraDeviceId, handDetectionEnabled, handWaveEnabled, fistCaptureEnabled, onPresence, onHandWave, onFist, onStatus, onTelemetry, onDevices, onStream, minFaceAreaRatio, presenceAbsentMs }: PresenceProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [faceBox, setFaceBox] = useState<FaceBox | undefined>();
@@ -194,7 +201,9 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
   const [frameSize, setFrameSize] = useState({ width: 1, height: 1 });
   const onPresenceRef = useRef(onPresence);
   const onHandWaveRef = useRef(onHandWave);
+  const onFistRef = useRef(onFist);
   const handWaveEnabledRef = useRef(handWaveEnabled);
+  const fistCaptureEnabledRef = useRef(fistCaptureEnabled);
   const onStatusRef = useRef(onStatus);
   const onTelemetryRef = useRef(onTelemetry);
   const onDevicesRef = useRef(onDevices);
@@ -206,7 +215,9 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
 
   useEffect(() => { onPresenceRef.current = onPresence; }, [onPresence]);
   useEffect(() => { onHandWaveRef.current = onHandWave; }, [onHandWave]);
+  useEffect(() => { onFistRef.current = onFist; }, [onFist]);
   useEffect(() => { handWaveEnabledRef.current = handWaveEnabled; }, [handWaveEnabled]);
+  useEffect(() => { fistCaptureEnabledRef.current = fistCaptureEnabled; }, [fistCaptureEnabled]);
   useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
   useEffect(() => { onTelemetryRef.current = onTelemetry; }, [onTelemetry]);
   useEffect(() => { onDevicesRef.current = onDevices; }, [onDevices]);
@@ -243,7 +254,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
     let disposed = false;
     let animationFrame = 0;
     let detector: FaceDetector | undefined;
-    let handLandmarker: HandLandmarker | undefined;
+    let gestureRecognizer: GestureRecognizer | undefined;
     let lastDetection = 0;
     let lastHandDetection = 0;
     let stableSince = 0;
@@ -259,6 +270,8 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
     // Wave-motion tracking, running in parallel with the hold above.
     let smoothedHandX: number | undefined;
     const handHistory: Array<{ x: number; at: number }> = [];
+    let fistSince = 0;
+    let fistCooldownUntil = 0;
 
     const resetTracking = () => {
       active = false;
@@ -304,9 +317,9 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
         });
         if (handDetectionEnabled) {
           try {
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
               baseOptions: {
-                modelAssetPath: import.meta.env.VITE_HAND_MODEL_URL ?? "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                modelAssetPath: import.meta.env.VITE_GESTURE_MODEL_URL ?? "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
               },
               runningMode: "VIDEO",
               numHands: 1,
@@ -318,7 +331,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
             onStatusRef.current("Hand detector unavailable · use mock wave control");
           }
         }
-        onStatusRef.current(handLandmarker ? "Face detector ready · open hand wave enabled" : "Face detector ready");
+        onStatusRef.current(gestureRecognizer ? "Face detector ready · hand gestures enabled" : "Face detector ready");
         onTelemetryRef.current({ camera: "ready", detector: "ready", faceCount: 0, confidence: 0, areaRatio: 0, stableMs: 0, absentMs: 0, active: false, lastFrameAt: new Date().toISOString() });
 
         const tick = (timestamp: number) => {
@@ -360,18 +373,50 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
           // camera is producing against the thresholds below.
           let handDiag: NonNullable<FaceTelemetry["hand"]> | undefined;
 
-          if (handLandmarker && timestamp - lastHandDetection >= 100) {
+          if (gestureRecognizer && timestamp - lastHandDetection >= 100) {
             lastHandDetection = timestamp;
-            const handResult = handLandmarker.detectForVideo(videoRef.current, timestamp);
+            const handResult = gestureRecognizer.recognizeForVideo(videoRef.current, timestamp);
             const candidates = handResult.landmarks
               .filter((landmarks) => landmarks.length >= 21)
               .map((landmarks) => {
                 const points = landmarks as HandPoint[];
-                return { landmarks: points, open: hasFiveOpenFingers(points) };
+                const index = handResult.landmarks.indexOf(landmarks);
+                const category = handResult.gestures[index]?.[0];
+                return { landmarks: points, open: hasFiveOpenFingers(points), gesture: category?.categoryName ?? "None", gestureScore: category?.score ?? 0 };
               })
-              .sort((a, b) => Number(b.open) - Number(a.open));
+              .sort((a, b) => Math.max(Number(b.open), b.gesture === "Closed_Fist" ? b.gestureScore : 0) - Math.max(Number(a.open), a.gesture === "Closed_Fist" ? a.gestureScore : 0));
             const candidate = candidates[0];
             setHandLandmarks(candidate?.landmarks);
+
+            const closedFist = fistCaptureEnabledRef.current && candidate?.gesture === "Closed_Fist" && candidate.gestureScore >= FIST_MIN_CONFIDENCE;
+            const fistHeldMs = closedFist && fistSince ? timestamp - fistSince : 0;
+            if (candidate && closedFist && !handWaveEnabledRef.current) {
+              handDiag = {
+                open: false,
+                palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]),
+                heldMs: 0,
+                span: 0,
+                travelled: 0,
+                directionChanges: 0,
+                gesture: candidate.gesture,
+                gestureScore: candidate.gestureScore,
+                fistHeldMs,
+              };
+            }
+            if (closedFist) {
+              if (!fistSince) {
+                fistSince = timestamp;
+                onStatusRef.current("Closed fist detected · hold to take photo");
+              }
+              if (timestamp - fistSince >= FIST_HOLD_MS && timestamp >= fistCooldownUntil) {
+                fistCooldownUntil = timestamp + 3500;
+                fistSince = 0;
+                onStatusRef.current("Closed fist confirmed · taking photo");
+                onFistRef.current();
+              }
+            } else {
+              fistSince = 0;
+            }
 
             if (!handWaveEnabledRef.current) {
               openHandSince = 0;
@@ -408,7 +453,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
                 if (direction) previousDirection = direction;
               }
               const span = spanMax - spanMin;
-              handDiag = { open: true, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs, span, travelled, directionChanges };
+              handDiag = { open: true, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs, span, travelled, directionChanges, gesture: candidate.gesture, gestureScore: candidate.gestureScore, fistHeldMs };
 
               const waveTriggered = handHistory.length >= WAVE_MIN_SAMPLES
                 && directionChanges >= WAVE_MIN_DIRECTION_CHANGES && span >= WAVE_MIN_SPAN && travelled >= WAVE_MIN_TRAVELLED;
@@ -434,10 +479,10 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
               smoothedHandX = undefined;
               if (handHistory.length) handHistory.splice(0, Math.max(0, handHistory.length - 3));
               handDiag = candidate
-                ? { open: false, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs: openHandSince ? timestamp - openHandSince : 0, span: 0, travelled: 0, directionChanges: 0 }
+                ? { open: false, palmWidth: pointDistance(candidate.landmarks[5], candidate.landmarks[17]), heldMs: openHandSince ? timestamp - openHandSince : 0, span: 0, travelled: 0, directionChanges: 0, gesture: candidate.gesture, gestureScore: candidate.gestureScore, fistHeldMs: fistSince ? timestamp - fistSince : 0 }
                 : undefined;
             }
-          } else if (!handLandmarker) {
+          } else if (!gestureRecognizer) {
             setHandLandmarks(undefined);
           }
 
@@ -497,7 +542,7 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
       disposed = true;
       cancelAnimationFrame(animationFrame);
       detector?.close();
-      handLandmarker?.close();
+      gestureRecognizer?.close();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       onStreamRef.current?.(null);

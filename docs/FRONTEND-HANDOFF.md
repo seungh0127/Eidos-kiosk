@@ -35,5 +35,21 @@ The design layer should keep result video playback muted, looped and `playsInlin
 - `GET /api/runtime`: counter, asset readiness and model configuration.
 - `GET /api/operator/status`: local diagnostics.
 - `GET /api/operator/sessions`: recent metadata for the panel/export.
+- `POST /api/photo`: accepts a browser-created `image/jpeg` body up to 2 MB and returns `{ downloadUrl, expiresAt, size }`. The URL is a temporary signed R2 GET URL and is the only value that should be encoded into the QR. When R2 is not configured the endpoint returns 503; keep that state visible to the operator.
+
+The result photo flow is `greeting → photo-onboarding → photo-capture →
+photo-countdown → photo-uploading → photo-ready/photo-error`. MediaPipe
+`GestureRecognizer` reports `Closed_Fist`; the capture callback fires after a
+score of at least `.65` has been held for approximately `.55s`. The UI then
+holds the visitor in a visible three-second `3 · 2 · 1` countdown before the
+actual capture and shows a short screen flash at the capture moment. Opening
+the fist during the countdown does not cancel the already-confirmed shot. The browser captures the actual
+result-card back-face DOM with `html-to-image`. Before capture, each live video
+is replaced in the temporary clone by a current canvas frame, preserving the
+camera mirror, robot alpha frame, card header, and per-robot offset without
+capturing the 3D flip transform. Keep the photo preview/QR screen long enough
+to scan and let the parent reset the visitor after its timer. The operator log
+reports the encoded JPEG size before upload and the server-accepted byte size;
+an unexpectedly tiny value indicates a capture failure before R2 is involved.
 
 The final deployment target is the exhibition Mac's local Node server. Keep the local `.env` for live demonstrations, but never commit it. Do not move `OPENAI_API_KEY` into Vite variables or a client bundle.

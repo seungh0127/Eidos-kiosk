@@ -45,12 +45,14 @@ export type RuntimeStatus = {
     realtime: string;
   };
   mockMode: boolean;
+  photoSharingConfigured: boolean;
 };
 
 export type OperatorStatus = {
   ok: boolean;
   database: "ok" | "error";
   openAiConfigured: boolean;
+  photoSharingConfigured: boolean;
   assetsReady: boolean;
   assetCount: number;
   latestError?: string;

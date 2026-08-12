@@ -16,7 +16,19 @@ export const config = {
   transcriptionModel: process.env.OPENAI_TRANSCRIBE_MODEL ?? "gpt-live-transcribe",
   realtimeModel: process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1-mini",
   mockMode: process.env.EIDOS_MOCK === "true",
+  r2AccountId: process.env.R2_ACCOUNT_ID ?? "",
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+  r2BucketName: process.env.R2_BUCKET_NAME ?? "",
+  photoUrlTtlSeconds: (() => {
+    const value = Number(process.env.PHOTO_URL_TTL_SECONDS ?? 3600);
+    return Number.isFinite(value) ? Math.min(86_400, Math.max(300, value)) : 3600;
+  })(),
 };
+
+export const photoSharingConfigured = Boolean(
+  config.r2AccountId && config.r2AccessKeyId && config.r2SecretAccessKey && config.r2BucketName,
+);
 
 export function assertValidConfig(): void {
   if (!config.mockMode && !config.openAiApiKey) {

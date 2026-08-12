@@ -1238,10 +1238,125 @@ button, input { font: inherit; }
   pointer-events: none;
   animation: photo-timer-in .75s .08s cubic-bezier(.22, 1, .36, 1) both;
 }
+/* The fist gesture is accepted once, then the visitor gets a clear three-
+   second pose window. Keep the number independent from the card/caption so
+   it stays centred on both portrait and landscape kiosk layouts. */
+.photo-countdown {
+  position: absolute;
+  z-index: 7;
+  top: 45%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: calc(var(--result-card-width) * .22);
+  height: calc(var(--result-card-width) * .22);
+  transform: translate(-50%, -50%);
+  color: #f4fdff;
+  font-size: calc(var(--result-card-width) * .16);
+  font-weight: 300;
+  line-height: 1;
+  text-shadow: 0 0 1.5rem rgba(91, 224, 255, .9), 0 0 3rem rgba(16, 122, 255, .5);
+  pointer-events: none;
+}
+.photo-countdown span {
+  display: block;
+  animation: photo-countdown-number 1s cubic-bezier(.22, 1, .36, 1) both;
+}
+.photo-countdown-prompt {
+  color: rgba(224, 247, 255, .68);
+}
+.photo-capture-flash {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  background: rgba(255, 255, 255, .94);
+  pointer-events: none;
+  animation: photo-capture-flash 260ms ease-out both;
+}
+.photo-uploading,
+.photo-share-panel {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  color: #fff;
+  text-align: center;
+}
+.photo-uploading {
+  align-content: center;
+  gap: 1rem;
+  background: rgba(0, 5, 10, .48);
+  font-size: clamp(1.2rem, 4cqw, 2.5rem);
+  animation: photo-onboarding-in 500ms ease both;
+}
+.photo-uploading p { margin: 0; }
+.photo-uploading-spinner {
+  width: 3rem;
+  height: 3rem;
+  border: .2rem solid rgba(255, 255, 255, .25);
+  border-top-color: #7eeeff;
+  border-radius: 50%;
+  animation: photo-spinner 900ms linear infinite;
+}
+.photo-share-panel {
+  grid-template-columns: minmax(0, 34%) minmax(0, 1fr);
+  gap: 5%;
+  align-content: center;
+  padding: 7% 8%;
+  background: rgba(0, 5, 10, .68);
+  animation: photo-onboarding-in 700ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.photo-share-preview {
+  width: 100%;
+  max-height: 70cqh;
+  object-fit: contain;
+  border: 1px solid rgba(160, 235, 255, .35);
+  border-radius: 1rem;
+  box-shadow: 0 0 2rem rgba(42, 211, 255, .2);
+}
+.photo-share-copy {
+  display: grid;
+  justify-items: center;
+  gap: .8rem;
+  min-width: 0;
+}
+.photo-share-title,
+.photo-share-guide,
+.photo-share-expiry { margin: 0; }
+.photo-share-title {
+  color: #e9fbff;
+  font-size: clamp(1.25rem, 4cqw, 2.8rem);
+  font-weight: 400;
+}
+.photo-share-qr {
+  width: min(48cqw, 36cqh);
+  height: min(48cqw, 36cqh);
+  padding: .55rem;
+  background: #fff;
+  border-radius: .5rem;
+}
+.photo-share-guide { color: rgba(235, 250, 255, .9); font-size: clamp(.9rem, 2.4cqw, 1.6rem); }
+.photo-share-expiry { color: rgba(204, 235, 245, .58); font-size: clamp(.7rem, 1.6cqw, 1.1rem); }
+.photo-share-panel.is-error { grid-template-columns: 1fr; }
+.photo-share-panel.is-error .photo-share-preview { width: min(38cqw, 16rem); }
+@keyframes photo-spinner { to { transform: rotate(360deg); } }
 /* Same entrance as the caption, but anchored by its bottom edge (no -50% Y). */
 @keyframes photo-timer-in {
   from { opacity: 0; filter: blur(8px); transform: translate(-50%, .55rem); }
   to { opacity: 1; filter: blur(0); transform: translate(-50%, 0); }
+}
+@keyframes photo-countdown-number {
+  0% { opacity: 0; filter: blur(12px); transform: scale(1.24); }
+  22% { opacity: 1; filter: blur(0); transform: scale(1); }
+  70% { opacity: 1; filter: blur(0); transform: scale(1); }
+  100% { opacity: 0; filter: blur(4px); transform: scale(.88); }
+}
+@keyframes photo-capture-flash {
+  0% { opacity: 0; }
+  12% { opacity: .96; }
+  100% { opacity: 0; }
 }
 
 .camera-feed { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
@@ -1579,11 +1694,14 @@ button, input { font: inherit; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ambient-glow-core, .prompt-dock-image-active, .transcript-word, .t-shimmer::before, .robot-loading-headline, .reel-track, .result-card, .result-orb, .result-greeting, .photo-capture-prompt, .photo-stage-timer, .photo-onboarding, .photo-onboarding-title, .photo-capture-ambient span, .slot-box-default, .slot-box-active { animation: none; transition: none; }
+  .ambient-glow-core, .prompt-dock-image-active, .transcript-word, .t-shimmer::before, .robot-loading-headline, .reel-track, .result-card, .result-orb, .result-greeting, .photo-capture-prompt, .photo-stage-timer, .photo-countdown, .photo-countdown span, .photo-capture-flash, .photo-onboarding, .photo-onboarding-title, .photo-capture-ambient span, .slot-box-default, .slot-box-active { animation: none; transition: none; }
   .reel-track { transform: translate3d(var(--reel-final, -25%), 0, 0) !important; }
   .slot-box-default { opacity: 0 !important; }
   .slot-box-active { opacity: 1 !important; }
   .result-greeting, .photo-capture-prompt, .photo-stage-timer, .photo-onboarding-title { opacity: 1; filter: none; }
+  .photo-countdown { opacity: 1; filter: none; transform: translate(-50%, -50%); }
+  .photo-countdown span { opacity: 1; filter: none; transform: none; }
+  .photo-capture-flash { opacity: 0; }
   .photo-capture-ambient span { opacity: .92; transform: translate(-50%, -50%) scale(1); }
   .text-animate-item { animation: none; opacity: 1; filter: none; transform: none; }
   .loading-headline-text.t-shimmer .text-animate-item {
