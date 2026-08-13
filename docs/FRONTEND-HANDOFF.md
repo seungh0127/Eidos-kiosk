@@ -35,7 +35,7 @@ The design layer should keep result video playback muted, looped and `playsInlin
 - `GET /api/runtime`: counter, asset readiness and model configuration.
 - `GET /api/operator/status`: local diagnostics.
 - `GET /api/operator/sessions`: recent metadata for the panel/export.
-- `POST /api/photo`: accepts a browser-created `image/jpeg` body up to 2 MB and returns `{ downloadUrl, expiresAt, size }`. The URL is a temporary signed R2 GET URL and is the only value that should be encoded into the QR. When R2 is not configured the endpoint returns 503; keep that state visible to the operator.
+- `POST /api/photo`: accepts a browser-created `image/jpeg` body up to 3 MB and returns `{ downloadUrl, expiresAt, size }`. The browser first encodes the card at 1080px with high JPEG quality, then retries with small quality and resolution reductions only when the image exceeds the upload target. The URL is a temporary signed R2 GET URL and is the only value that should be encoded into the QR. When R2 is not configured the endpoint returns 503; keep that state visible to the operator.
 
 The result photo flow is `greeting → photo-onboarding → photo-capture →
 photo-countdown → photo-uploading → photo-ready/photo-error`. MediaPipe
@@ -46,7 +46,9 @@ longer takes a photo. The UI then holds the visitor in a visible three-second
 `3 · 2 · 1` countdown before the actual capture and shows a short screen flash
 at the capture moment. Opening the hand during the countdown does not cancel
 the already-confirmed shot. The browser captures the actual
-result-card back-face DOM with `html-to-image`. Before capture, each live video
+result-card back-face DOM with `html-to-image`. The initial output is 1080px
+wide and is adaptively recompressed below the 3 MB upload limit when needed.
+Before capture, each live video
 is replaced in the temporary clone by a current canvas frame, preserving the
 camera mirror, robot alpha frame, card header, and per-robot offset without
 capturing the 3D flip transform. Keep the photo preview/QR screen long enough

@@ -108,10 +108,13 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "32kb" }));
 
-app.post("/api/photo", express.raw({ type: "image/jpeg", limit: "2mb" }), async (req, res) => {
+const PHOTO_MAX_BYTES = 3_000_000;
+
+app.post("/api/photo", express.raw({ type: "image/jpeg", limit: "3mb" }), async (req, res) => {
   if (!photoSharingConfigured) return res.status(503).json({ error: "Photo sharing is not configured on this kiosk." });
   const image = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
   if (image.length < 10_000) return res.status(400).json({ error: "The captured photo is empty or too small." });
+  if (image.length > PHOTO_MAX_BYTES) return res.status(413).json({ error: "The captured photo is larger than 3 MB." });
   try {
     const uploaded = await uploadVisitorPhoto(image);
     const qrUrl = new URL(uploaded.sharePath, `${photoShareBaseUrl(req)}/`).toString();

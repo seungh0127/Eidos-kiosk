@@ -18,6 +18,12 @@ const WAKE_HINT_DELAY_MS = 3500;
 const REQUEST_RETRY_TIMEOUT_MS = 15000;
 const MIC_CALIBRATION_PHASE_MS = 7000;
 const MICROPHONE_DEVICE_STORAGE_KEY = "eidos.microphoneDeviceId";
+// Photo uploads are kept below the server's 3 MB hard limit with a small
+// safety margin. The first attempt remains high quality; fallback attempts
+// only run when the encoded JPEG is too large for the current camera/card
+// composition.
+const PHOTO_UPLOAD_TARGET_BYTES = 2_850_000;
+const PHOTO_UPLOAD_MAX_BYTES = 3_000_000;
 // Keep the original visual beat between "face detected" and the wake-listen
 // hint. The prompt is also gated by the Realtime-ready phase below.
 const INTRO_REVEAL_DELAY_MS = 1000;
@@ -2187,32 +2193,53 @@ async function captureResultCard(card: HTMLElement | null): Promise<Blob> {
 
   const outputWidth = 1080;
   const outputHeight = Math.round(outputWidth * height / width);
+  const compressionAttempts = [
+    { width: outputWidth, quality: .88 },
+    { width: outputWidth, quality: .84 },
+    { width: outputWidth, quality: .80 },
+    { width: 960, quality: .88 },
+    { width: 960, quality: .82 },
+    { width: 900, quality: .88 },
+    { width: 900, quality: .82 },
+    { width: 840, quality: .86 },
+    { width: 840, quality: .80 },
+    { width: 720, quality: .82 },
+  ];
   try {
-    const blob = await captureDomToBlob(captureClone, {
-      width,
-      height,
-      canvasWidth: outputWidth,
-      canvasHeight: outputHeight,
-      pixelRatio: 1,
-      type: "image/jpeg",
-      quality: .88,
-      backgroundColor: "#07131d",
-      cacheBust: false,
-      // The live back face is rotated as part of the card's 3D flip. Capturing
-      // the face itself needs only the face's upright visual composition.
-      style: {
-        transform: "none",
-        animation: "none",
-        transition: "none",
-        backfaceVisibility: "visible",
-        webkitBackfaceVisibility: "visible",
-        opacity: "1",
-        visibility: "visible",
-      },
-    });
-    if (!blob) throw new Error("Photo encoding failed.");
-    if (blob.size > 2_000_000) throw new Error("Captured photo is too large to share.");
-    return blob;
+    let lastBlob: Blob | null = null;
+    let firstAcceptableBlob: Blob | null = null;
+    for (const attempt of compressionAttempts) {
+      const attemptHeight = Math.round(attempt.width * height / width);
+      const blob = await captureDomToBlob(captureClone, {
+        width,
+        height,
+        canvasWidth: attempt.width,
+        canvasHeight: attemptHeight,
+        pixelRatio: 1,
+        type: "image/jpeg",
+        quality: attempt.quality,
+        backgroundColor: "#07131d",
+        cacheBust: false,
+        // The live back face is rotated as part of the card's 3D flip. Capturing
+        // the face itself needs only the face's upright visual composition.
+        style: {
+          transform: "none",
+          animation: "none",
+          transition: "none",
+          backfaceVisibility: "visible",
+          webkitBackfaceVisibility: "visible",
+          opacity: "1",
+          visibility: "visible",
+        },
+      });
+      if (!blob) continue;
+      lastBlob = blob;
+      if (blob.size <= PHOTO_UPLOAD_TARGET_BYTES) return blob;
+      if (blob.size <= PHOTO_UPLOAD_MAX_BYTES && !firstAcceptableBlob) firstAcceptableBlob = blob;
+    }
+    if (firstAcceptableBlob) return firstAcceptableBlob;
+    if (!lastBlob) throw new Error("Photo encoding failed.");
+    throw new Error(`Captured photo is too large after compression (${(lastBlob.size / 1_000_000).toFixed(2)} MB).`);
   } finally {
     captureHost.remove();
   }

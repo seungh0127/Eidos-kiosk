@@ -27,6 +27,11 @@ styling visible on the kiosk. The compressed image is then sent to the local
 server. If R2 is configured, the server returns a one-hour signed URL and the
 screen shows its QR code. The image is not written to the kiosk disk.
 
+The browser first captures a high-quality 1080px-wide JPEG. If the image is
+too large, it retries with small quality and resolution reductions, keeping the
+result below the 3 MB upload limit while preserving the highest available
+quality for that card.
+
 For a live exhibition, configure a private R2 bucket and a token scoped only
 to that bucket's Object Read and Object Write permissions. Put the values in
 the root `.env`:
