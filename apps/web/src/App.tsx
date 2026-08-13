@@ -190,6 +190,10 @@ const PHOTO_CAPTURE_MS = 30000;
 const PHOTO_COUNTDOWN_MS = 5000;
 const PHOTO_FLASH_MS = 260;
 const PHOTO_QR_DISPLAY_MS = 30000;
+// Keep the QR screen through brief detector dropouts, but close it once the
+// visitor has actually left. Five seconds gives the visitor time to step out
+// of frame without making the QR screen linger after they leave.
+const PHOTO_QR_ABSENT_MS = 5000;
 const MOCK_TRANSCRIPTION_TEXT = "새로운 집으로 이사했는데 이삿짐을 정리하고 싶어";
 const MOCK_TRANSCRIPTION_STEP_MS = 220;
 // Deliberately matches none of mockAnalyzeLocally's routing keywords, so it
@@ -1153,7 +1157,10 @@ export default function App() {
       if (captureAttempt !== photoCaptureAttemptRef.current) return;
       resultStageTimerRef.current = window.setTimeout(() => {
         resultStageTimerRef.current = null;
-        resetToIdle();
+        // Fallback only: if the visitor never leaves, show the initial screen
+        // but keep presence tracking waiting for that visitor to exit before
+        // accepting another session.
+        resetToIdle(false);
       }, PHOTO_QR_DISPLAY_MS);
     }
   }, [appendDebugLog, phase, resetToIdle]);
@@ -1493,7 +1500,8 @@ export default function App() {
       return;
     }
     if (phase === "result" && (resultPhotoStage === "photo-uploading" || resultPhotoStage === "photo-ready" || resultPhotoStage === "photo-error")) {
-      appendDebugLog("photo", "Face left after capture · keeping QR screen until its timer ends");
+      appendDebugLog("photo", "Face left after capture · closing QR screen");
+      resetToIdle();
       return;
     }
     if (phase === "result" || phase === "error" || phase === "wait-for-exit") resetToIdle();
@@ -1647,7 +1655,7 @@ export default function App() {
   return (
     <main className={`kiosk kiosk-${phase} ${operatorOpen ? "kiosk-debug" : ""} ${screenRotated ? "kiosk-screen-rotated" : ""}`}>
       {resetFadeKey > 0 && <div key={resetFadeKey} className="reset-fade" aria-hidden="true" />}
-      <PresenceDetector mock={MOCK} enabled={phase !== "boot"} diagnostic={(operatorOpen || MOCK) && !photoStageActive} resetToken={presenceResetToken} cameraDeviceId={cameraDeviceId} handDetectionEnabled={MOCK || phase === "analyzing" || phase === "result"} handWaveEnabled={phase === "result" && resultPhotoStage === "greeting"} fistCaptureEnabled={photoCaptureActive} minFaceAreaRatio={photoStageActive ? 0.01 : undefined} presenceAbsentMs={photoShareActive ? 60000 : photoCaptureActive || photoCountdownActive ? photoCaptureAbsentMs : photoOnboardingActive ? 8000 : undefined} onPresence={handlePresence} onHandWave={handleHandWave} onFist={handleFistCapture} onStatus={handlePresenceStatus} onTelemetry={handleFaceTelemetry} onDevices={handleCameraDevices} onStream={setCameraStream} />
+      <PresenceDetector mock={MOCK} enabled={phase !== "boot"} diagnostic={(operatorOpen || MOCK) && !photoStageActive} resetToken={presenceResetToken} cameraDeviceId={cameraDeviceId} handDetectionEnabled={MOCK || phase === "analyzing" || phase === "result"} handWaveEnabled={phase === "result" && resultPhotoStage === "greeting"} fistCaptureEnabled={photoCaptureActive} minFaceAreaRatio={photoStageActive ? 0.01 : undefined} presenceAbsentMs={photoShareActive ? PHOTO_QR_ABSENT_MS : photoCaptureActive || photoCountdownActive ? photoCaptureAbsentMs : photoOnboardingActive ? 8000 : undefined} onPresence={handlePresence} onHandWave={handleHandWave} onFist={handleFistCapture} onStatus={handlePresenceStatus} onTelemetry={handleFaceTelemetry} onDevices={handleCameraDevices} onStream={setCameraStream} />
       {phase === "boot" && <section className="screen screen-center"><p className="eyebrow">EIDOS</p><h1>Preparing the experience</h1></section>}
       {(phase === "idle" || phase === "presence" || phase === "realtime-connecting" || phase === "wake-listen" || phase === "request-listen") && <WelcomeScreen mode={phase === "request-listen" ? "request" : "prompt"} visualState={phase} initial={phase === "idle"} ready={introRevealed && phase === "wake-listen"} intensity={introIntensity} wakePromptAttention={phase === "wake-listen" && wakePromptAttention} requestPromptVisible={requestPromptVisible} requestNotice={phase === "request-listen" ? requestNotice : ""} requestText={requestText} micLevel={phase === "wake-listen" || phase === "request-listen" ? micLevel : 0} exampleMorphTrigger={exampleMorphTrigger} />}
       {phase === "analyzing" && <RobotLoadingScreen locked={loadingLocked} robotId={result?.robotId ?? null} />}
