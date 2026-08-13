@@ -1130,14 +1130,13 @@ export default function App() {
       const payload = await response.json().catch(() => ({})) as { shareUrl?: string; qrUrl?: string; downloadUrl?: string; expiresAt?: string; size?: number; objectKey?: string; error?: string };
       if (captureAttempt !== photoCaptureAttemptRef.current) return;
       if (!response.ok || !payload.shareUrl) throw new Error(payload.error || `Photo upload failed (${response.status})`);
-      // The QR points at the styled share page (see photo-share-page.ts on
-      // the server), not the raw image — scanning it should land on a page
-      // that looks like the kiosk, not a bare JPEG.
-      const qrTarget = payload.qrUrl ?? payload.shareUrl;
+      // Use the signed R2 share page directly. The compact qrUrl is a local
+      // Mac redirect and only works when the visitor's phone is on the same
+      // network, while shareUrl works over the public internet.
+      const qrTarget = payload.shareUrl;
       const qrDataUrl = await QRCode.toDataURL(qrTarget, {
-        // The server returns a compact /p/... redirect instead of encoding
-        // the long R2 signature. Level L then produces the sparsest reliable
-        // QR matrix available for this short-lived exhibition link.
+        // The signed R2 URL is longer than the local redirect, so keep the
+        // lowest correction level and a compact quiet zone to fit the kiosk.
         errorCorrectionLevel: "L",
         margin: 1,
         width: 640,
