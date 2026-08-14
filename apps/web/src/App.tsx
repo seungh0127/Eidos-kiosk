@@ -194,6 +194,10 @@ const PHOTO_QR_DISPLAY_MS = 30000;
 // visitor has actually left. Five seconds gives the visitor time to step out
 // of frame without making the QR screen linger after they leave.
 const PHOTO_QR_ABSENT_MS = 5000;
+// The final photo is encoded at 1080px wide. Keeping temporary video frames
+// near that size prevents a high-resolution exhibition display from creating
+// a huge data URI inside html-to-image's SVG serialization.
+const PHOTO_CAPTURE_MAX_VIDEO_DIMENSION = 1440;
 const MOCK_TRANSCRIPTION_TEXT = "새로운 집으로 이사했는데 이삿짐을 정리하고 싶어";
 const MOCK_TRANSCRIPTION_STEP_MS = 220;
 // Deliberately matches none of mockAnalyzeLocally's routing keywords, so it
@@ -2076,10 +2080,11 @@ function objectPositionRatio(value: string | undefined, axis: "x" | "y"): number
   return 0.5;
 }
 
-function drawVideoFrame(video: HTMLVideoElement, width: number, height: number): string {
+function drawVideoFrame(video: HTMLVideoElement, width: number, height: number, format: "image/png" | "image/jpeg"): string {
+  const dimensionScale = Math.min(1, PHOTO_CAPTURE_MAX_VIDEO_DIMENSION / Math.max(width, height));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
+  canvas.width = Math.max(1, Math.round(width * dimensionScale));
+  canvas.height = Math.max(1, Math.round(height * dimensionScale));
   const context = canvas.getContext("2d");
   if (!context || video.videoWidth < 1 || video.videoHeight < 1) throw new Error("Video frame is not ready.");
 
@@ -2100,7 +2105,7 @@ function drawVideoFrame(video: HTMLVideoElement, width: number, height: number):
   // PNG preserves the alpha in the robot WebM frame. The live CSS mirror is
   // retained by the cloned image's class/style, so the camera is not mirrored
   // twice here.
-  return canvas.toDataURL("image/png");
+  return canvas.toDataURL(format, format === "image/jpeg" ? .86 : undefined);
 }
 
 async function captureResultCard(card: HTMLElement | null): Promise<Blob> {
@@ -2132,7 +2137,8 @@ async function captureResultCard(card: HTMLElement | null): Promise<Blob> {
     if (videoWidth < 1 || videoHeight < 1) return;
     const image = document.createElement("img");
     image.className = clonedVideo.className;
-    image.src = drawVideoFrame(sourceVideo, videoWidth, videoHeight);
+    const isCameraFrame = Boolean(sourceVideo.closest(".result-camera-preview"));
+    image.src = drawVideoFrame(sourceVideo, videoWidth, videoHeight, isCameraFrame ? "image/jpeg" : "image/png");
     image.alt = "";
     image.setAttribute("aria-hidden", "true");
     const videoStyle = getComputedStyle(sourceVideo);
