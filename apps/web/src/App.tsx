@@ -959,12 +959,9 @@ export default function App() {
     if (!cleanText || analysisStartedRef.current) return;
     analysisStartedRef.current = true;
     stopRealtime();
-    setPhase("analyzing");
-    playSound("analyzing");
     setResult(null);
     setLoadingLocked(false);
     setTranscript(cleanText);
-    const started = Date.now();
     const askForRequestAgain = () => {
       analysisStartedRef.current = false;
       partialRef.current = "";
@@ -1009,8 +1006,16 @@ export default function App() {
         askForRequestAgain();
         return;
       }
+
+      // Only enter the Analyse request screen after the request has been
+      // confirmed as routable. Invalid requests stay on the listening screen
+      // and transition directly to the retry message without flashing the
+      // loading reel or playing its sound.
+      const analyzingStarted = Date.now();
+      setPhase("analyzing");
+      playSound("analyzing");
       setResult(nextResult);
-      const elapsed = Date.now() - started;
+      const elapsed = Date.now() - analyzingStarted;
       const revealDelay = Math.max(0, ROBOT_LOADING_DURATION_MS - elapsed - ROBOT_CARD_SETTLE_MS);
       loadingRevealTimerRef.current = window.setTimeout(() => {
         loadingRevealTimerRef.current = null;
@@ -1807,7 +1812,7 @@ function DiagnosticPanel({
       <div className="diagnostic-row"><span>Palm</span><strong className={faceTelemetry.hand?.open ? "status-good" : "status-idle"}>{faceTelemetry.hand ? (faceTelemetry.hand.open ? "OPEN" : "not open") : "no hand"}</strong></div>
       <div className="diagnostic-row"><span>Gesture model</span><strong>{faceTelemetry.hand?.gesture ?? "—"} {faceTelemetry.hand?.gestureScore ? `· ${faceTelemetry.hand.gestureScore.toFixed(2)}` : ""}</strong></div>
       <div className="diagnostic-grid"><span>Palm width <b>{(faceTelemetry.hand?.palmWidth ?? 0).toFixed(3)}</b></span><span>Open held <b>{((faceTelemetry.hand?.heldMs ?? 0) / 1000).toFixed(1)}s / 5.0s</b></span><span>Fist held <b>{((faceTelemetry.hand?.fistHeldMs ?? 0) / 1000).toFixed(1)}s / .18s</b></span><span>Fist armed <b>{faceTelemetry.hand?.fistArmed ? "yes" : "no"}</b></span><span>Span <b>{(faceTelemetry.hand?.span ?? 0).toFixed(3)}</b></span><span>Travelled <b>{(faceTelemetry.hand?.travelled ?? 0).toFixed(3)}</b></span><span>Dir. changes <b>{faceTelemetry.hand?.directionChanges ?? 0}</b></span></div>
-      <small className="diagnostic-muted">Photo trigger: Closed_Fist ≥ .65 for .18s → open hand within 1.5s · wave: palm hold ≥ 5.0s OR (span ≥ .11 · travelled ≥ .2 · dir. changes ≥ 1)</small>
+      <small className="diagnostic-muted">Photo trigger: Closed_Fist ≥ .65 for .18s → release within 1.5s · wave: palm hold ≥ 5.0s OR (span ≥ .11 · travelled ≥ .2 · dir. changes ≥ 1)</small>
     </section>
 
     <section className="diagnostic-section">

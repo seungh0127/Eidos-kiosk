@@ -63,8 +63,10 @@ const WAVE_DIRECTION_DELTA = 0.01;
 const WAVE_MIN_DIRECTION_CHANGES = 1;
 const WAVE_MIN_SPAN = 0.11;
 const WAVE_MIN_TRAVELLED = 0.2;
-// Photo gesture is a quick close -> open sequence rather than a long closed
-// fist hold. The detector runs at roughly 10fps, so the close arm and open
+// Photo gesture is a quick close -> release sequence rather than a long
+// closed fist hold. "Release" is just the fist no longer being classified as
+// Closed_Fist — not a fully open hand (see the fistArmed branch below for
+// why). The detector runs at roughly 10fps, so the close arm and release
 // confirmation are intentionally short but still require more than one
 // accidental classification to proceed.
 const FIST_ARM_MS = 180;
@@ -411,7 +413,6 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
             const fistCaptureEnabled = fistCaptureEnabledRef.current;
             if (!fistCaptureEnabled) resetFistTracking();
             const closedFist = fistCaptureEnabled && candidate?.gesture === "Closed_Fist" && candidate.gestureScore >= FIST_MIN_CONFIDENCE;
-            const openHand = fistCaptureEnabled && Boolean(candidate?.open);
             const fistHeldMs = closedFist && fistSince ? timestamp - fistSince : 0;
             const fistSequenceMs = fistSince ? timestamp - fistSince : 0;
             if (candidate && fistCaptureEnabled && !handWaveEnabledRef.current) {
@@ -442,14 +443,22 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
                 fistOpenSince = 0;
                 if (!fistArmed && timestamp - fistSince >= FIST_ARM_MS) {
                   fistArmed = true;
-                  onStatusRef.current("Closed fist armed · open hand to capture");
+                  onStatusRef.current("Closed fist armed · release to capture");
                 }
               }
             } else if (fistAwaitingRelease) {
               // The timed-out fist has now been released; the next fist can
               // start a fresh gesture sequence.
               resetFistTracking();
-            } else if (fistArmed && openHand && fistSequenceMs <= FIST_SEQUENCE_WINDOW_MS) {
+            } else if (fistArmed && fistSequenceMs <= FIST_SEQUENCE_WINDOW_MS) {
+              // Any release of the fist counts, not specifically a fully open
+              // hand (hasFiveOpenFingers requires every finger to pass its
+              // own straightness/angle check). Requiring that at the exact
+              // instant of a fast unclench snap was the main source of missed
+              // triggers — mid-motion fingers rarely land cleanly on that
+              // check within a single ~100ms-sampled frame, so visitors had
+              // to repeat the gesture, which read as "doesn't recognize it /
+              // there's a delay."
               if (!fistOpenSince) {
                 fistOpenSince = timestamp;
                 onStatusRef.current("Fist release detected · confirming capture");
@@ -466,9 +475,6 @@ export function PresenceDetector({ mock, enabled, diagnostic, resetToken, camera
               fistArmed = false;
               fistAwaitingRelease = true;
               if (fistCaptureEnabled) onStatusRef.current("Fist gesture timed out · try close then open again");
-            } else if (openHand) {
-              // Opening without first arming a fist is not a photo gesture.
-              resetFistTracking();
             }
 
             if (!handWaveEnabledRef.current) {
